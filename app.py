@@ -455,6 +455,7 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
         
         home_adv = home_advantages.get(home_team, 0.3)
         lambda_home = base_lambda_home * (1 + home_adv)
+        lambda_away = base_lambda_away  # WICHTIG: Initialisierung!
         
         home_form = form_factors.get(home_team, 1.0)
         away_form = form_factors.get(away_team, 1.0)
