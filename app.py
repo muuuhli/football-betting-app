@@ -71,13 +71,13 @@ if 'kelly_fraction' not in st.session_state:
 if 'max_bet_percent' not in st.session_state:
     st.session_state.max_bet_percent = 5.0
 if 'min_value_threshold' not in st.session_state:
-    st.session_state.min_value_threshold = 1.08  # 8% Edge minimum
+    st.session_state.min_value_threshold = 1.05  # GELOCKERT: 5% Edge statt 8%
 if 'max_odds_threshold' not in st.session_state:
-    st.session_state.max_odds_threshold = 2.5  # Keine extremen Underdogs
+    st.session_state.max_odds_threshold = 3.0  # GELOCKERT: 3.0 statt 2.5
 if 'enable_draw_bets' not in st.session_state:
-    st.session_state.enable_draw_bets = False  # Draws standardmäßig aus
+    st.session_state.enable_draw_bets = True  # AKTIVIERT: Draw Bets an
 if 'min_confidence' not in st.session_state:
-    st.session_state.min_confidence = 0.35  # Min 35% Wahrscheinlichkeit
+    st.session_state.min_confidence = 0.30  # GELOCKERT: 30% statt 35%
 
 # ============================================================================
 # API FUNKTIONEN
@@ -815,10 +815,24 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
     results = []
     bankroll = st.session_state.bankroll
     
+    # Debug-Tracking
+    debug_info = {
+        'total_fixtures': 0,
+        'no_odds': 0,
+        'no_probs': 0,
+        'filtered_value': 0,
+        'filtered_odds': 0,
+        'filtered_confidence': 0,
+        'filtered_draw': 0,
+        'passed_all': 0
+    }
+    
     progress_bar = st.progress(0)
     
     for idx, (_, fixture) in enumerate(df_test.iterrows()):
         progress_bar.progress((idx + 1) / len(df_test))
+        
+        debug_info['total_fixtures'] += 1
         
         home_team = fixture['home']
         away_team = fixture['away']
@@ -836,6 +850,7 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
             time.sleep(0.4)
         
         if not odds:
+            debug_info['no_odds'] += 1
             continue
         
         # Professionelle Vorhersage
@@ -846,6 +861,7 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
         )
         
         if not probs:
+            debug_info['no_probs'] += 1
             continue
         
         # Actual result
@@ -864,25 +880,31 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
         ]
         
         for market, prob, odd in markets:
-            # PROFIT-FILTER anwenden
+            # PROFIT-FILTER mit Debug-Tracking
             if not odd or odd <= 1:
                 continue
             
-            # Filter 1: Min Value Threshold
-            if prob * odd < st.session_state.min_value_threshold:
-                continue
-            
-            # Filter 2: Max Odds (keine extremen Underdogs)
-            if odd > st.session_state.max_odds_threshold:
-                continue
-            
-            # Filter 3: Min Confidence
-            if prob < st.session_state.min_confidence:
-                continue
-            
-            # Filter 4: Draws optional
+            # Filter 1: Draw-Filter
             if market == 'draw' and not st.session_state.enable_draw_bets:
+                debug_info['filtered_draw'] += 1
                 continue
+            
+            # Filter 2: Min Value Threshold
+            if prob * odd < st.session_state.min_value_threshold:
+                debug_info['filtered_value'] += 1
+                continue
+            
+            # Filter 3: Max Odds (keine extremen Underdogs)
+            if odd > st.session_state.max_odds_threshold:
+                debug_info['filtered_odds'] += 1
+                continue
+            
+            # Filter 4: Min Confidence
+            if prob < st.session_state.min_confidence:
+                debug_info['filtered_confidence'] += 1
+                continue
+            
+            debug_info['passed_all'] += 1
             
             # Kelly-Stake berechnen
             stake, _ = calculate_kelly_stake(
@@ -915,6 +937,35 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
                 })
     
     progress_bar.empty()
+    
+    # ZEIGE DEBUG-INFO
+    with st.expander("🔍 Debug: Warum wurden Wetten gefiltert?"):
+        st.write(f"**Gesamt Test-Spiele:** {debug_info['total_fixtures']}")
+        st.write(f"**Mögliche Märkte:** {debug_info['total_fixtures'] * 3}")
+        st.write("")
+        st.write("**Gefiltert weil:**")
+        st.write(f"- Keine Quoten verfügbar: {debug_info['no_odds']} Spiele")
+        st.write(f"- Keine Wahrscheinlichkeiten: {debug_info['no_probs']} Spiele")
+        st.write(f"- Draw-Filter (Draw Bets aus): {debug_info['filtered_draw']} Märkte")
+        st.write(f"- Zu wenig Value (< {st.session_state.min_value_threshold}): {debug_info['filtered_value']} Märkte")
+        st.write(f"- Quote zu hoch (> {st.session_state.max_odds_threshold}): {debug_info['filtered_odds']} Märkte")
+        st.write(f"- Zu wenig Confidence (< {st.session_state.min_confidence * 100:.0f}%): {debug_info['filtered_confidence']} Märkte")
+        st.write("")
+        st.write(f"**✅ Alle Filter bestanden:** {debug_info['passed_all']} Märkte")
+        
+        if debug_info['passed_all'] == 0:
+            st.warning("""
+            ⚠️ **Keine Wetten haben alle Filter bestanden!**
+            
+            **Empfehlungen:**
+            1. **Mehr Test-Tage** (21-30 statt 14)
+            2. **Filter lockern:**
+               - Min Value: 1.05 (statt 1.08)
+               - Max Odds: 3.0 (statt 2.5)
+               - Min Confidence: 30% (statt 35%)
+            3. **Draw Bets aktivieren**
+            4. **Andere Liga** (Premier League hat mehr Spiele pro Woche)
+            """)
     
     if not results:
         st.warning("Keine Value Bets gefunden")
