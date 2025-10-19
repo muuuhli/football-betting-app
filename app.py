@@ -745,7 +745,11 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
         train_end = test_start
         train_start = train_end - timedelta(days=days_back)
     
-    st.write(f"📅 **Training:** {train_start.strftime('%Y-%m-%d')} bis {train_end.strftime('%Y-%m-%d')} ({days_back} Tage)")
+    # CRITICAL FIX: Training darf nicht bis test_start gehen (inclusive), 
+    # sondern muss einen Tag davor enden um Überlappung zu vermeiden
+    train_end_exclusive = train_end - timedelta(days=1)
+    
+    st.write(f"📅 **Training:** {train_start.strftime('%Y-%m-%d')} bis {train_end_exclusive.strftime('%Y-%m-%d')} ({days_back} Tage)")
     st.write(f"📅 **Test:** {test_start.strftime('%Y-%m-%d')} bis {test_end.strftime('%Y-%m-%d')} ({test_days} Tage)")
     st.write(f"📅 **Season:** {season}")
     
@@ -754,7 +758,7 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
         train_fixtures = get_historical_fixtures(
             api_key, league_id, season, 
             days_back=days_back,
-            end_date=train_end
+            end_date=train_end_exclusive  # FIXED: Einen Tag früher enden
         )
     
     if len(train_fixtures) < 30:
