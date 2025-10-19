@@ -84,8 +84,39 @@ if 'min_confidence' not in st.session_state:
 # ============================================================================
 
 def get_current_season():
+    """
+    Intelligente Season-Erkennung
+    
+    Wählt die Season basierend auf aktuellem Datum:
+    - August - Dezember: aktuelles Jahr
+    - Januar - Juli: vorheriges Jahr
+    """
     now = datetime.now()
-    return now.year if now.month >= 7 else now.year - 1
+    
+    # Saison läuft von August bis Juli des Folgejahres
+    if now.month >= 8:
+        return now.year
+    else:
+        return now.year - 1
+
+def get_available_season_for_backtest():
+    """
+    NEU: Gibt die Season zurück die tatsächlich Daten hat
+    
+    In Simulator-Umgebung (Oktober 2025) müssen wir Season 2024 nutzen,
+    weil die API nur echte historische Daten hat.
+    """
+    now = datetime.now()
+    
+    # Wenn wir weit in der Zukunft sind (Simulator), nutze letzte verfügbare Season
+    # In der echten Welt (2024) gibt es keine Daten für 2025
+    current_season = get_current_season()
+    
+    # Hack: Wenn Season > 2024, nutze 2024 (neueste verfügbare)
+    if current_season > 2024:
+        return 2024
+    
+    return current_season
 
 def test_api_connection(api_key):
     headers = {
@@ -677,21 +708,46 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
     
     WICHTIG: Testet auf Spiele VOR heute, nicht ab heute!
     """
-    season = get_current_season()
+    # FIXED: Nutze verfügbare Season statt aktuelle
+    season = get_available_season_for_backtest()
     
-    st.info(f"🔬 Starte Profi-Backtest für {league_name}...")
+    st.info(f"🔬 Starte Profi-Backtest für {league_name} (Season {season})...")
     
-    # FIXED: Berechne korrekte Zeiträume für rückwirkenden Test
-    # Test-Zeitraum: von (heute - test_days) bis heute
-    test_end = datetime.now()
-    test_start = test_end - timedelta(days=test_days)
+    # FIXED: Berechne Zeiträume basierend auf verfügbaren Daten
+    # Season 2024 läuft von Aug 2024 bis Mai 2025
+    # Wenn wir im Oktober 2025 sind, müssen wir zurück zu Season 2024
     
-    # Training-Zeitraum: von (test_start - days_back) bis test_start
-    train_start = test_start - timedelta(days=days_back)
-    train_end = test_start
+    if season == 2024:
+        # Für Season 2024: Nutze Daten bis Ende der Season (Mai 2025 oder heute, was früher ist)
+        season_end = datetime(2025, 5, 31)  # Season 2024 endet Mai 2025
+        today = datetime.now()
+        
+        # Nutze das frühere Datum
+        data_end = min(season_end, today)
+        
+        # Test-Zeitraum: Letzte N Tage vor data_end
+        test_end = data_end
+        test_start = test_end - timedelta(days=test_days)
+        
+        # Training-Zeitraum: N Tage vor test_start  
+        train_end = test_start
+        train_start = train_end - timedelta(days=days_back)
+        
+        # Sicherstellen dass wir nicht vor Season-Start gehen (Aug 2024)
+        season_start = datetime(2024, 8, 1)
+        if train_start < season_start:
+            train_start = season_start
+            st.warning(f"⚠️ Training-Start angepasst auf Season-Beginn: {season_start.strftime('%Y-%m-%d')}")
+    else:
+        # Standard-Berechnung für aktuelle Season
+        test_end = datetime.now()
+        test_start = test_end - timedelta(days=test_days)
+        train_end = test_start
+        train_start = train_end - timedelta(days=days_back)
     
     st.write(f"📅 **Training:** {train_start.strftime('%Y-%m-%d')} bis {train_end.strftime('%Y-%m-%d')} ({days_back} Tage)")
     st.write(f"📅 **Test:** {test_start.strftime('%Y-%m-%d')} bis {test_end.strftime('%Y-%m-%d')} ({test_days} Tage)")
+    st.write(f"📅 **Season:** {season}")
     
     # Lade Training-Daten
     with st.spinner("Lade Training-Daten..."):
