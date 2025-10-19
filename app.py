@@ -1,38 +1,40 @@
 """
-Fußballwetten-Analyse-App
+Fußballwetten-Analyse-App (Verbesserte Version)
 Automatische Analyse aller Top-Ligen mit Dixon-Coles-Modell
-Optimiert für mobile Geräte (iPhone, Android)
+Optimiert für mobile Geräte mit verbesserter API-Integration
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from scipy.stats import poisson
 from scipy.optimize import minimize
 import time
+import json
 
 # ============================================================================
 # KONFIGURATION
 # ============================================================================
 
 st.set_page_config(
-    page_title="⚽ Wetten-Analyst",
+    page_title="⚽ Wetten-Analyst Pro",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
     menu_items={
-        'About': "Professionelle Fußballwetten-Analyse mit Dixon-Coles-Modell"
+        'About': "Professionelle Fußballwetten-Analyse mit Dixon-Coles-Modell v2.0"
     }
 )
 
-# Custom CSS
+# Custom CSS für bessere mobile Darstellung
 st.markdown("""
 <style>
     .main .block-container {
         padding-top: 1rem;
         padding-bottom: 1rem;
+        max-width: 100%;
     }
     [data-testid="stMetricValue"] {
         font-size: 1.5rem;
@@ -41,18 +43,30 @@ st.markdown("""
         width: 100%;
         padding: 0.75rem;
         font-size: 1rem;
+        background-color: #4CAF50;
+        color: white;
+        border-radius: 5px;
     }
     .dataframe {
         font-size: 0.85rem;
     }
     h1 {
         font-size: 1.8rem !important;
+        text-align: center;
     }
     h2 {
         font-size: 1.4rem !important;
     }
     h3 {
         font-size: 1.2rem !important;
+    }
+    .stExpander {
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        margin-bottom: 1rem;
+    }
+    div[data-testid="stExpander"] div[role="button"] {
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -67,7 +81,11 @@ LEAGUES = {
     "🇩🇪 2. Bundesliga": 79,
     "🇪🇸 La Liga": 140,
     "🇮🇹 Serie A": 135,
-    "🇫🇷 Ligue 1": 61
+    "🇫🇷 Ligue 1": 61,
+    "🇳🇱 Eredivisie": 88,
+    "🇵🇹 Primeira Liga": 94,
+    "🇧🇪 Pro League": 144,
+    "🇹🇷 Süper Lig": 203
 }
 
 # ============================================================================
@@ -79,34 +97,95 @@ if 'bankroll' not in st.session_state:
     st.session_state.initial_bankroll = 1000.0
     st.session_state.bet_history = []
     st.session_state.api_key = ""
+    st.session_state.analysis_cache = {}
+    st.session_state.last_analysis = None
+    st.session_state.selected_leagues = []
 
 # ============================================================================
-# API-FUNKTIONEN
+# API-FUNKTIONEN (VERBESSERT)
 # ============================================================================
 
-@st.cache_data(ttl=3600)
-def load_fixtures(_api_key, league_id, season):
-    """Lädt kommende Spielansetzungen (gecacht für 1 Stunde)"""
-    url = "https://v3.football.api-sports.io/fixtures"
-    headers = {'x-apisports-key': _api_key}
-    params = {'league': league_id, 'season': season, 'next': 5}
+def check_api_status(api_key):
+    """Überprüft API-Key und zeigt verbleibende Anfragen"""
+    if not api_key:
+        return None
+        
+    url = "https://v3.football.api-sports.io/status"
+    headers = {'x-apisports-key': api_key}
     
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            return data.get('response', [])
-        return []
+            if data.get('response'):
+                account = data['response']['account']
+                requests_info = data['response']['requests']
+                return {
+                    'valid': True,
+                    'firstname': account.get('firstname', 'User'),
+                    'limit_day': requests_info.get('limit_day', 0),
+                    'current': requests_info.get('current', 0),
+                    'remaining': requests_info.get('limit_day', 0) - requests_info.get('current', 0)
+                }
     except Exception as e:
-        st.error(f"API-Fehler bei Liga {league_id}: {str(e)}")
-        return []
+        st.error(f"API-Verbindungsfehler: {str(e)}")
+    
+    return {'valid': False}
 
-@st.cache_data(ttl=86400)
-def load_historical_data(_api_key, league_id, season):
-    """Lädt historische Spieldaten (gecacht für 24 Stunden)"""
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_fixtures(_api_key, league_id, season):
+    """Lädt kommende Spielansetzungen mit verbesserter Fehlerbehandlung"""
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {'x-apisports-key': _api_key}
-    params = {'league': league_id, 'season': season, 'status': 'FT'}
+    
+    # Datum für die nächsten 7 Tage
+    today = datetime.now().strftime('%Y-%m-%d')
+    next_week = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+    
+    params = {
+        'league': league_id,
+        'season': season,
+        'from': today,
+        'to': next_week
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            fixtures = data.get('response', [])
+            
+            # Filtere nur wirklich zukünftige Spiele
+            future_fixtures = []
+            for fixture in fixtures:
+                try:
+                    fixture_date = datetime.fromisoformat(fixture['fixture']['date'].replace('Z', '+00:00'))
+                    if fixture_date > datetime.now(fixture_date.tzinfo):
+                        future_fixtures.append(fixture)
+                except:
+                    continue
+            
+            return future_fixtures
+        elif response.status_code == 204:
+            return []  # Keine Daten verfügbar
+        else:
+            return []
+    except requests.exceptions.Timeout:
+        return []
+    except Exception:
+        return []
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_historical_data(_api_key, league_id, season):
+    """Lädt historische Spieldaten"""
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {'x-apisports-key': _api_key}
+    
+    params = {
+        'league': league_id,
+        'season': season,
+        'status': 'FT'  # Nur beendete Spiele
+    }
     
     try:
         response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -114,27 +193,52 @@ def load_historical_data(_api_key, league_id, season):
             data = response.json()
             return data.get('response', [])
         return []
-    except Exception as e:
-        st.error(f"Fehler beim Laden historischer Daten (Liga {league_id}): {str(e)}")
+    except Exception:
         return []
 
 def load_odds(api_key, fixture_id):
     """Lädt Quoten für ein Spiel"""
     url = "https://v3.football.api-sports.io/odds"
     headers = {'x-apisports-key': api_key}
-    params = {'fixture': fixture_id, 'bet': 1}
+    params = {
+        'fixture': fixture_id,
+        'bet': 1  # Match Winner
+    }
     
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            return data.get('response', [])
-        return []
+            odds_response = data.get('response', [])
+            
+            if odds_response and len(odds_response) > 0:
+                best_odds = {'home': 0, 'draw': 0, 'away': 0}
+                
+                for bookmaker_data in odds_response[0].get('bookmakers', []):
+                    bets = bookmaker_data.get('bets', [])
+                    for bet in bets:
+                        if bet.get('id') == 1:  # Match Winner
+                            values = bet.get('values', [])
+                            for value in values:
+                                odd = float(value.get('odd', 0))
+                                market = value.get('value', '')
+                                
+                                if market == 'Home' and odd > best_odds['home']:
+                                    best_odds['home'] = odd
+                                elif market == 'Draw' and odd > best_odds['draw']:
+                                    best_odds['draw'] = odd
+                                elif market == 'Away' and odd > best_odds['away']:
+                                    best_odds['away'] = odd
+                
+                if best_odds['home'] > 0 and best_odds['draw'] > 0 and best_odds['away'] > 0:
+                    return best_odds
+        
+        return None
     except:
-        return []
+        return None
 
 # ============================================================================
-# DIXON-COLES MODELL
+# DIXON-COLES MODELL (VERBESSERT)
 # ============================================================================
 
 def rho_correction(x, y, lambda_x, mu_y, rho):
@@ -158,33 +262,44 @@ def dc_log_like(params, home_goals, away_goals, home_teams, away_teams, team_lis
     home_adv = params[-2]
     rho = params[-1]
     
+    rho = np.clip(rho, -0.3, 0.3)
+    
     team_to_idx = {team: idx for idx, team in enumerate(team_list)}
     log_like = 0
     
     for i in range(len(home_goals)):
+        if home_teams[i] not in team_to_idx or away_teams[i] not in team_to_idx:
+            continue
+            
         home_idx = team_to_idx[home_teams[i]]
         away_idx = team_to_idx[away_teams[i]]
         
-        lambda_home = np.exp(attack[home_idx] + defence[away_idx] + home_adv)
-        mu_away = np.exp(attack[away_idx] + defence[home_idx])
+        lambda_home = np.exp(np.clip(attack[home_idx] + defence[away_idx] + home_adv, -10, 10))
+        mu_away = np.exp(np.clip(attack[away_idx] + defence[home_idx], -10, 10))
+        
+        lambda_home = np.clip(lambda_home, 0.1, 10)
+        mu_away = np.clip(mu_away, 0.1, 10)
         
         try:
-            log_like += (
-                np.log(rho_correction(home_goals[i], away_goals[i], lambda_home, mu_away, rho)) +
-                np.log(poisson.pmf(home_goals[i], lambda_home)) +
-                np.log(poisson.pmf(away_goals[i], mu_away))
-            )
+            correction = rho_correction(home_goals[i], away_goals[i], lambda_home, mu_away, rho)
+            if correction > 0:
+                log_like += (
+                    np.log(correction) +
+                    np.log(poisson.pmf(home_goals[i], lambda_home) + 1e-10) +
+                    np.log(poisson.pmf(away_goals[i], mu_away) + 1e-10)
+                )
         except:
             continue
     
     return -log_like
 
 def train_dixon_coles_model(historical_data):
-    """Trainiert Dixon-Coles Modell"""
-    if not historical_data or len(historical_data) < 50:
+    """Trainiert verbessertes Dixon-Coles Modell"""
+    if not historical_data or len(historical_data) < 30:
         return None
     
     matches = []
+    
     for match in historical_data:
         try:
             if match['fixture']['status']['short'] == 'FT':
@@ -201,27 +316,41 @@ def train_dixon_coles_model(historical_data):
         except:
             continue
     
-    if len(matches) < 50:
+    if len(matches) < 30:
         return None
     
     df = pd.DataFrame(matches)
+    
+    # Filtere Teams mit zu wenigen Spielen
+    home_counts = df['home_team'].value_counts()
+    away_counts = df['away_team'].value_counts()
+    team_counts = home_counts.add(away_counts, fill_value=0)
+    valid_teams = team_counts[team_counts >= 5].index.tolist()
+    
+    df = df[(df['home_team'].isin(valid_teams)) & (df['away_team'].isin(valid_teams))]
+    
+    if len(df) < 30:
+        return None
+    
     teams = sorted(list(set(df['home_team'].unique()) | set(df['away_team'].unique())))
     n_teams = len(teams)
     
-    if n_teams < 10:
+    if n_teams < 8:
         return None
     
     def constraint_func(params):
-        return np.sum(params[:n_teams]) - n_teams
+        return np.mean(np.exp(params[:n_teams])) - 1.0
     
     constraints = {'type': 'eq', 'fun': constraint_func}
     
     initial_params = np.concatenate([
-        np.ones(n_teams),
-        np.ones(n_teams),
-        [0.3],
-        [-0.13]
+        np.zeros(n_teams),      # Attack
+        np.zeros(n_teams),      # Defence
+        [0.3],                  # Home advantage
+        [-0.1]                  # Rho
     ])
+    
+    bounds = [(None, None)] * (2 * n_teams) + [(0, 1), (-0.3, 0.3)]
     
     try:
         result = minimize(
@@ -235,26 +364,29 @@ def train_dixon_coles_model(historical_data):
                 teams
             ),
             constraints=constraints,
-            method='SLSQP',
-            options={'maxiter': 100, 'disp': False}
+            bounds=bounds,
+            method='L-BFGS-B',
+            options={'maxiter': 200, 'disp': False}
         )
         
-        if result.success:
+        if result.fun < np.inf:
             params = result.x
             return {
                 'teams': teams,
                 'attack': {teams[i]: params[i] for i in range(n_teams)},
                 'defence': {teams[i]: params[n_teams + i] for i in range(n_teams)},
                 'home_adv': params[-2],
-                'rho': params[-1]
+                'rho': params[-1],
+                'matches_used': len(df),
+                'convergence': result.success
             }
     except:
         pass
     
     return None
 
-def predict_match(model, home_team, away_team, max_goals=5):
-    """Berechnet Spielvorhersage"""
+def predict_match(model, home_team, away_team, max_goals=6):
+    """Verbesserte Spielvorhersage"""
     if not model or home_team not in model['attack'] or away_team not in model['attack']:
         return None
     
@@ -269,6 +401,9 @@ def predict_match(model, home_team, away_team, max_goals=5):
             model['defence'][home_team]
         )
         
+        lambda_home = np.clip(lambda_home, 0.5, 5)
+        mu_away = np.clip(mu_away, 0.5, 5)
+        
         prob_matrix = np.zeros((max_goals + 1, max_goals + 1))
         
         for i in range(max_goals + 1):
@@ -279,14 +414,21 @@ def predict_match(model, home_team, away_team, max_goals=5):
                     poisson.pmf(j, mu_away)
                 )
         
+        prob_matrix = prob_matrix / prob_matrix.sum()
+        
         prob_home = np.sum(np.tril(prob_matrix, -1))
         prob_draw = np.sum(np.diag(prob_matrix))
         prob_away = np.sum(np.triu(prob_matrix, 1))
         
+        confidence = 'high' if model.get('matches_used', 0) > 100 else 'medium' if model.get('matches_used', 0) > 50 else 'low'
+        
         return {
             'prob_home': prob_home,
             'prob_draw': prob_draw,
-            'prob_away': prob_away
+            'prob_away': prob_away,
+            'expected_home_goals': lambda_home,
+            'expected_away_goals': mu_away,
+            'confidence': confidence
         }
     except:
         return None
@@ -297,69 +439,98 @@ def predict_match(model, home_team, away_team, max_goals=5):
 
 def calculate_value(fair_prob, market_odds):
     """Berechnet Value/Edge"""
-    if market_odds <= 1.0:
+    if market_odds <= 1.01 or fair_prob <= 0:
         return 0
-    implied_prob = 1 / market_odds
-    value = (fair_prob - implied_prob) / implied_prob * 100
-    return value
+    
+    edge = fair_prob * market_odds - 1
+    value_percent = edge * 100
+    
+    return value_percent
 
-def calculate_kelly_stake(fair_prob, market_odds, bankroll, fraction=0.25):
-    """Berechnet Kelly-Einsatz"""
-    if market_odds <= 1.0 or fair_prob <= 0:
+def calculate_kelly_stake(fair_prob, market_odds, bankroll, fraction=0.2):
+    """Konservativerer Kelly-Einsatz"""
+    if market_odds <= 1.01 or fair_prob <= 0.05:
         return 0
     
-    q = 1 - fair_prob
     b = market_odds - 1
-    kelly = (fair_prob * b - q) / b
-    kelly_fraction = kelly * fraction
+    p = fair_prob
+    q = 1 - fair_prob
     
-    if kelly_fraction < 0:
+    kelly = (b * p - q) / b
+    
+    if kelly <= 0:
         return 0
-    if kelly_fraction > 0.05:
-        kelly_fraction = 0.05
+    
+    kelly_fraction = kelly * fraction
+    max_stake = bankroll * 0.03
+    min_stake = bankroll * 0.01
     
     stake = bankroll * kelly_fraction
-    return stake
+    stake = min(stake, max_stake)
+    stake = max(stake, min_stake) if kelly_fraction > 0 else 0
+    
+    return round(stake, 2)
 
 # ============================================================================
 # HAUPTANALYSE
 # ============================================================================
 
-def analyze_all_leagues(api_key, season):
-    """Analysiert alle konfigurierten Ligen"""
+def analyze_leagues(api_key, selected_leagues, season):
+    """Analysiert ausgewählte Ligen"""
     all_value_bets = []
+    analysis_summary = {
+        'total_fixtures_analyzed': 0,
+        'models_trained': 0,
+        'value_bets_found': 0,
+        'api_calls_used': 0
+    }
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    progress_container = st.container()
+    with progress_container:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        details_text = st.empty()
     
-    total_leagues = len(LEAGUES)
+    total_leagues = len(selected_leagues)
     
-    for idx, (league_name, league_id) in enumerate(LEAGUES.items()):
-        status_text.text(f"Analysiere {league_name}...")
-        progress_bar.progress((idx + 1) / total_leagues)
+    for idx, league_name in enumerate(selected_leagues):
+        league_id = LEAGUES[league_name]
         
-        # Historische Daten laden
-        historical_data = load_historical_data(api_key, league_id, season - 1)
+        progress = (idx + 1) / total_leagues
+        progress_bar.progress(progress)
+        status_text.text(f"Analysiere {league_name}... ({idx + 1}/{total_leagues})")
         
-        if not historical_data or len(historical_data) < 50:
-            st.warning(f"⚠️ {league_name}: Nicht genug Daten")
+        # Lade historische Daten
+        details_text.text("📊 Lade historische Daten...")
+        historical_data = load_historical_data(api_key, league_id, season)
+        analysis_summary['api_calls_used'] += 1
+        
+        if not historical_data or len(historical_data) < 30:
+            details_text.warning(f"⚠️ {league_name}: Nicht genug Daten")
+            time.sleep(1)
             continue
         
-        # Modell trainieren
+        # Trainiere Modell
+        details_text.text("🤖 Trainiere Modell...")
         model = train_dixon_coles_model(historical_data)
         
         if not model:
-            st.warning(f"⚠️ {league_name}: Modelltraining fehlgeschlagen")
+            details_text.warning(f"⚠️ {league_name}: Modelltraining fehlgeschlagen")
+            time.sleep(1)
             continue
         
-        # Kommende Spiele laden
+        analysis_summary['models_trained'] += 1
+        
+        # Lade kommende Spiele
+        details_text.text("🔮 Lade kommende Spiele...")
         fixtures = load_fixtures(api_key, league_id, season)
+        analysis_summary['api_calls_used'] += 1
         
         if not fixtures:
             continue
         
-        # Spiele analysieren
-        for fixture in fixtures[:3]:  # Max 3 Spiele pro Liga
+        # Analysiere Spiele
+        for fixture in fixtures[:5]:
             try:
                 home_team = fixture['teams']['home']['name']
                 away_team = fixture['teams']['away']['name']
@@ -371,210 +542,204 @@ def analyze_all_leagues(api_key, season):
                 if not prediction:
                     continue
                 
-                # Quoten laden
-                odds_data = load_odds(api_key, fixture_id)
+                analysis_summary['total_fixtures_analyzed'] += 1
                 
-                if not odds_data or len(odds_data) == 0:
+                # Lade Quoten
+                odds = load_odds(api_key, fixture_id)
+                analysis_summary['api_calls_used'] += 1
+                
+                if not odds:
                     continue
                 
-                try:
-                    bookmaker = odds_data[0]['bookmakers'][0]
-                    bets = bookmaker['bets'][0]['values']
+                # Value-Berechnung
+                value_home = calculate_value(prediction['prob_home'], odds['home'])
+                value_draw = calculate_value(prediction['prob_draw'], odds['draw'])
+                value_away = calculate_value(prediction['prob_away'], odds['away'])
+                
+                markets = [
+                    ('Heimsieg', value_home, odds['home'], prediction['prob_home'], '1'),
+                    ('Unentschieden', value_draw, odds['draw'], prediction['prob_draw'], 'X'),
+                    ('Auswärtssieg', value_away, odds['away'], prediction['prob_away'], '2')
+                ]
+                
+                best_market = max(markets, key=lambda x: x[1])
+                
+                if best_market[1] >= 5:  # Mindestens 5% Value
+                    stake = calculate_kelly_stake(best_market[3], best_market[2], st.session_state.bankroll)
                     
-                    odds_home = float([b['odd'] for b in bets if b['value'] == 'Home'][0])
-                    odds_draw = float([b['odd'] for b in bets if b['value'] == 'Draw'][0])
-                    odds_away = float([b['odd'] for b in bets if b['value'] == 'Away'][0])
-                    
-                    # Value berechnen
-                    value_home = calculate_value(prediction['prob_home'], odds_home)
-                    value_draw = calculate_value(prediction['prob_draw'], odds_draw)
-                    value_away = calculate_value(prediction['prob_away'], odds_away)
-                    
-                    values = [
-                        ('1', value_home, odds_home, prediction['prob_home']),
-                        ('X', value_draw, odds_draw, prediction['prob_draw']),
-                        ('2', value_away, odds_away, prediction['prob_away'])
-                    ]
-                    
-                    best_bet = max(values, key=lambda x: x[1])
-                    
-                    if best_bet[1] > 5:  # Nur Value > 5%
-                        stake = calculate_kelly_stake(
-                            best_bet[3],
-                            best_bet[2],
-                            st.session_state.bankroll
-                        )
+                    if stake > 0:
+                        try:
+                            match_datetime = datetime.fromisoformat(fixture_date.replace('Z', '+00:00'))
+                            formatted_date = match_datetime.strftime('%d.%m. %H:%M')
+                        except:
+                            formatted_date = fixture_date
                         
                         all_value_bets.append({
                             'Liga': league_name,
                             'Spiel': f"{home_team} - {away_team}",
-                            'Datum': datetime.fromisoformat(fixture_date.replace('Z', '+00:00')).strftime('%d.%m %H:%M'),
-                            'Tipp': best_bet[0],
-                            'Quote': f"{best_bet[2]:.2f}",
-                            'Value': f"{best_bet[1]:.1f}%",
-                            'Einsatz': f"€{stake:.0f}"
+                            'Datum': formatted_date,
+                            'Tipp': best_market[4],
+                            'Markt': best_market[0],
+                            'Quote': f"{best_market[2]:.2f}",
+                            'Fair': f"{best_market[3]*100:.1f}%",
+                            'Value': f"{best_market[1]:.1f}%",
+                            'Einsatz': f"€{stake:.2f}",
+                            'Konfidenz': prediction['confidence']
                         })
-                except:
-                    continue
+                        analysis_summary['value_bets_found'] += 1
                     
             except:
                 continue
             
-            time.sleep(0.1)  # Kleine Pause zwischen Anfragen
+            time.sleep(0.5)
     
     progress_bar.empty()
     status_text.empty()
+    details_text.empty()
     
-    return all_value_bets
+    return all_value_bets, analysis_summary
 
 # ============================================================================
 # STREAMLIT UI
 # ============================================================================
 
 def main():
-    st.title("⚽ Wetten-Analyst")
-    st.caption("Automatische Multi-Liga-Analyse mit Dixon-Coles")
+    st.title("⚽ Wetten-Analyst Pro")
+    st.caption(f"Version 2.0 | Dixon-Coles Modell | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     
-    # Einstellungen
-    with st.expander("⚙️ Einstellungen", expanded=not st.session_state.api_key):
+    # Tabs
+    tab_settings, tab_analysis, tab_help = st.tabs([
+        "⚙️ Einstellungen", 
+        "🎯 Analyse", 
+        "❓ Hilfe"
+    ])
+    
+    with tab_settings:
+        st.header("⚙️ Einstellungen")
+        
+        # API-Key
         api_key = st.text_input(
             "API-Football Key",
             type="password",
             value=st.session_state.api_key,
-            help="Kostenlos auf api-football.com"
+            placeholder="Dein API-Key hier eingeben...",
+            help="Kostenlos auf api-football.com erhältlich"
         )
         st.session_state.api_key = api_key
         
-        st.info(f"📊 Analysiert werden: {', '.join([name.split()[1] for name in LEAGUES.keys()])}")
+        if api_key:
+            status = check_api_status(api_key)
+            if status and status.get('valid'):
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Status", "✅ Aktiv")
+                col2.metric("Heute genutzt", f"{status['current']}/{status['limit_day']}")
+                col3.metric("Verbleibend", status['remaining'])
         
+        # Liga-Auswahl
+        st.subheader("🏆 Liga-Auswahl")
+        
+        selected_leagues = st.multiselect(
+            "Wähle Ligen für die Analyse",
+            options=list(LEAGUES.keys()),
+            default=list(LEAGUES.keys())[:3]
+        )
+        st.session_state.selected_leagues = selected_leagues
+        
+        # Saison
         current_year = datetime.now().year
-        season = st.selectbox("Saison", [current_year, current_year - 1], index=0)
+        season = st.selectbox(
+            "Saison",
+            options=[current_year, current_year - 1],
+            format_func=lambda x: f"{x}/{x+1}"
+        )
+        
+        # Bankroll
+        st.subheader("💰 Bankroll")
+        st.session_state.bankroll = st.number_input(
+            "Aktuelle Bankroll (€)",
+            min_value=10.0,
+            max_value=100000.0,
+            value=st.session_state.bankroll,
+            step=100.0
+        )
     
-    # Bankroll
-    with st.expander("💰 Bankroll", expanded=False):
-        col1, col2, col3 = st.columns(3)
+    with tab_analysis:
+        st.header("🎯 Value-Bet Analyse")
         
-        with col1:
-            st.metric("Aktuell", f"€{st.session_state.bankroll:.0f}")
+        if not st.session_state.api_key:
+            st.warning("⚠️ Bitte zuerst API-Key eingeben")
+            st.stop()
         
-        with col2:
-            change = ((st.session_state.bankroll / st.session_state.initial_bankroll - 1) * 100)
-            st.metric("Änderung", f"{change:.1f}%")
+        if not st.session_state.selected_leagues:
+            st.info("📋 Bitte Ligen auswählen")
+            st.stop()
         
-        with col3:
-            if st.session_state.bet_history:
-                total_staked = sum([bet['stake'] for bet in st.session_state.bet_history])
-                total_return = sum([bet.get('return', 0) for bet in st.session_state.bet_history])
-                roi = ((total_return - total_staked) / total_staked * 100) if total_staked > 0 else 0
-                st.metric("ROI", f"{roi:.1f}%")
+        if st.button("🚀 ANALYSE STARTEN", type="primary", use_container_width=True):
+            with st.spinner("Analysiere..."):
+                value_bets, summary = analyze_leagues(
+                    st.session_state.api_key,
+                    st.session_state.selected_leagues,
+                    season
+                )
+                
+                st.session_state.last_analysis = {
+                    'bets': value_bets,
+                    'summary': summary,
+                    'timestamp': datetime.now()
+                }
         
-        if st.button("🔄 Reset"):
-            st.session_state.bankroll = st.session_state.initial_bankroll
-            st.session_state.bet_history = []
-            st.rerun()
-    
-    if not api_key:
-        st.warning("⚠️ API-Key erforderlich")
-        st.info("""
-        **Kostenloser API-Key:**
-        1. Besuche [api-football.com](https://www.api-football.com/)
-        2. Registriere dich kostenlos
-        3. Kopiere deinen Key
-        4. Füge ihn oben ein
-        """)
-        return
-    
-    # Tabs
-    tab1, tab2, tab3 = st.tabs(["🎯 Analyse", "📊 Protokoll", "📈 Stats"])
-    
-    with tab1:
-        st.info("🔍 Die App analysiert automatisch alle Top-Ligen und zeigt nur die besten Value Bets (>5% Edge)")
-        
-        if st.button("🚀 Alle Ligen analysieren", type="primary", use_container_width=True):
-            value_bets = analyze_all_leagues(api_key, season)
+        # Ergebnisse
+        if st.session_state.last_analysis:
+            analysis = st.session_state.last_analysis
             
-            if value_bets:
-                st.success(f"✅ {len(value_bets)} Value Bets gefunden!")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Spiele analysiert", analysis['summary']['total_fixtures_analyzed'])
+            col2.metric("Value Bets", analysis['summary']['value_bets_found'])
+            col3.metric("API-Anfragen", analysis['summary']['api_calls_used'])
+            
+            if analysis['bets']:
+                st.subheader(f"🎯 {len(analysis['bets'])} Value Bets gefunden")
                 
-                df_value = pd.DataFrame(value_bets)
-                st.dataframe(df_value, use_container_width=True, hide_index=True)
+                df_bets = pd.DataFrame(analysis['bets'])
+                st.dataframe(df_bets, use_container_width=True, hide_index=True)
                 
+                csv = df_bets.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     "📥 Als CSV herunterladen",
-                    df_value.to_csv(index=False).encode('utf-8'),
-                    "value_bets.csv",
-                    "text/csv",
-                    use_container_width=True
+                    csv,
+                    f"value_bets_{datetime.now().strftime('%Y%m%d')}.csv",
+                    "text/csv"
                 )
             else:
                 st.info("Keine Value Bets mit >5% Edge gefunden")
     
-    with tab2:
-        st.subheader("📊 Wett-Protokoll")
+    with tab_help:
+        st.header("❓ Hilfe")
         
-        if st.session_state.bet_history:
-            df_history = pd.DataFrame(st.session_state.bet_history)
-            st.dataframe(df_history, use_container_width=True, hide_index=True)
-        else:
-            st.info("Noch keine Wetten")
+        with st.expander("🚀 Schnellstart"):
+            st.markdown("""
+            1. **API-Key eingeben** (api-football.com)
+            2. **Ligen auswählen**
+            3. **Analyse starten**
+            4. **Value Bets prüfen**
+            """)
         
-        with st.expander("➕ Wette hinzufügen"):
-            col1, col2 = st.columns(2)
-            with col1:
-                bet_stake = st.number_input("Einsatz €", min_value=0.0, step=10.0)
-                bet_odds = st.number_input("Quote", min_value=1.0, step=0.1, value=2.0)
-            with col2:
-                bet_result = st.selectbox("Ergebnis", ["Offen", "Gewonnen", "Verloren"])
-            
-            if st.button("Speichern", use_container_width=True):
-                bet_return = 0
-                if bet_result == "Gewonnen":
-                    bet_return = bet_stake * bet_odds
-                    st.session_state.bankroll += (bet_return - bet_stake)
-                elif bet_result == "Verloren":
-                    st.session_state.bankroll -= bet_stake
-                
-                st.session_state.bet_history.append({
-                    'Datum': datetime.now().strftime('%d.%m'),
-                    'Einsatz': f"€{bet_stake:.0f}",
-                    'Quote': bet_odds,
-                    'Status': bet_result,
-                    'return': bet_return,
-                    'stake': bet_stake
-                })
-                st.success("✅ Gespeichert")
-                st.rerun()
-    
-    with tab3:
-        st.subheader("📈 Statistiken")
+        with st.expander("📊 Dixon-Coles Modell"):
+            st.markdown("""
+            Statistisches Modell zur Fußballvorhersage:
+            - Poisson-Verteilung für Tore
+            - Team-spezifische Stärken
+            - Heimvorteil
+            - Korrektur für niedrige Torzahlen
+            """)
         
-        if st.session_state.bet_history:
-            df = pd.DataFrame(st.session_state.bet_history)
-            
-            won_bets = df[df['Status'] == 'Gewonnen']
-            lost_bets = df[df['Status'] == 'Verloren']
-            
-            total_staked = sum([bet['stake'] for bet in st.session_state.bet_history])
-            total_return = sum([bet.get('return', 0) for bet in st.session_state.bet_history])
-            roi = ((total_return - total_staked) / total_staked * 100) if total_staked > 0 else 0
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Gewinnrate", f"{len(won_bets) / len(df) * 100:.0f}%")
-            col2.metric("ROI", f"{roi:.1f}%")
-            col3.metric("Wetten", len(df))
-            
-            st.divider()
-            
-            if roi < -10:
-                st.error("⚠️ **Kritisch:** ROI < -10%. Pause empfohlen!")
-            elif roi < 0:
-                st.warning("⚠️ Leicht negativ. Mehr Daten nötig.")
-            elif roi < 5:
-                st.info("✅ Im Rahmen. Weiter so!")
-            else:
-                st.success(f"🎉 Sehr gut! ROI: {roi:.1f}%")
-        else:
-            st.info("Noch keine Daten")
+        with st.expander("💰 Value Betting"):
+            st.markdown("""
+            Value = Faire Quote höher als Marktquote
+            - Nur Wetten mit >5% Edge
+            - Kelly-Kriterium für Einsätze
+            - Langfristige Strategie (100+ Wetten)
+            """)
 
 if __name__ == "__main__":
     main()
