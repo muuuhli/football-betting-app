@@ -371,23 +371,48 @@ def calculate_team_strengths_advanced(df):
     form_factors = {}
     
     for team in teams:
-        home_matches = df[df['home_team'] == team].copy()
-        if len(home_matches) > 0:
-            home_weights = weights[home_matches.index]
-            attack[team] = np.average(home_matches['home_goals'], weights=home_weights)
+        # ANGRIFF: Durchschnitt aller geschossenen Tore (Heim + Auswärts)
+        all_goals = []
+        all_weights = []
+        
+        home_games = df[df['home_team'] == team]
+        for idx in home_games.index:
+            all_goals.append(home_games.loc[idx, 'home_goals'])
+            all_weights.append(weights[idx])
+        
+        away_games = df[df['away_team'] == team]
+        for idx in away_games.index:
+            all_goals.append(away_games.loc[idx, 'away_goals'])
+            all_weights.append(weights[idx])
+        
+        if len(all_goals) > 0:
+            attack[team] = np.average(all_goals, weights=all_weights)
         else:
             attack[team] = 1.0
         
-        away_matches = df[df['away_team'] == team].copy()
-        if len(away_matches) > 0:
-            away_weights = weights[away_matches.index]
-            avg_conceded = np.average(away_matches['away_goals'], weights=away_weights)
+        # VERTEIDIGUNG: Durchschnitt aller kassierten Tore (Heim + Auswärts)
+        all_conceded = []
+        all_weights_def = []
+        
+        for idx in home_games.index:
+            all_conceded.append(home_games.loc[idx, 'away_goals'])
+            all_weights_def.append(weights[idx])
+        
+        for idx in away_games.index:
+            all_conceded.append(away_games.loc[idx, 'home_goals'])
+            all_weights_def.append(weights[idx])
+        
+        if len(all_conceded) > 0:
+            avg_conceded = np.average(all_conceded, weights=all_weights_def)
             defense[team] = 1.0 / (avg_conceded + 0.1)
         else:
             defense[team] = 1.0
         
+        # HEIMVORTEIL & FORM
         home_advantages[team] = calculate_individual_home_advantage(team, df)
         form_factors[team] = calculate_form_factor(team, df, last_n=5)
+    
+    return attack, defense, home_advantages, form_factors
     
     return attack, defense, home_advantages, form_factors
 
@@ -395,17 +420,42 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
                                           home_advantages, form_factors, df):
     """Erweiterte Wahrscheinlichkeitsberechnung"""
     try:
-        base_lambda_home = attack.get(home_team, 1.0) * defense.get(away_team, 1.0)
-        base_lambda_away = attack.get(away_team, 1.0) * defense.get(home_team, 1.0)
+        # Hole Werte mit Fehlerbehandlung
+        home_attack = attack.get(home_team, 1.0)
+        away_attack = attack.get(away_team, 1.0)
+        home_defense = defense.get(home_team, 1.0)
+        away_defense = defense.get(away_team, 1.0)
+        
+        # Debug-Ausgabe wenn im Debug-Modus
+        if st.session_state.get('debug_mode', False):
+            st.write(f"**{home_team} vs {away_team}**")
+            st.write(f"Attack: {home_attack:.2f} vs {away_attack:.2f}")
+            st.write(f"Defense: {home_defense:.2f} vs {away_defense:.2f}")
+        
+        base_lambda_home = home_attack * away_defense
+        base_lambda_away = away_attack * home_defense
         
         home_adv = home_advantages.get(home_team, 0.3)
         lambda_home = base_lambda_home * (1 + home_adv)
         
-        lambda_home *= form_factors.get(home_team, 1.0)
-        lambda_away *= form_factors.get(away_team, 1.0)
+        home_form = form_factors.get(home_team, 1.0)
+        away_form = form_factors.get(away_team, 1.0)
+        
+        lambda_home *= home_form
+        lambda_away *= away_form
         
         h2h_factor = calculate_h2h_factor(home_team, away_team, df)
         lambda_home *= h2h_factor
+        
+        # Sicherstellen dass Lambda-Werte sinnvoll sind
+        if lambda_home < 0.1:
+            lambda_home = 0.5
+        if lambda_away < 0.1:
+            lambda_away = 0.5
+        if lambda_home > 5:
+            lambda_home = 5
+        if lambda_away > 5:
+            lambda_away = 5
         
         max_goals = 6
         prob_matrix = np.zeros((max_goals + 1, max_goals + 1))
@@ -431,7 +481,10 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
             'expected_goals_home': lambda_home,
             'expected_goals_away': lambda_away
         }
-    except:
+    except Exception as e:
+        if st.session_state.get('debug_mode', False):
+            st.error(f"Fehler bei {home_team} vs {away_team}: {str(e)}")
+        
         return {
             'home_win': 0.33, 
             'draw': 0.33, 
