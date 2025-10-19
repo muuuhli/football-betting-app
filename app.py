@@ -1,7 +1,6 @@
 """
-Fußballwetten-Analyse-App v2.2 (API-Request Fix)
-KORRIGIERT: API-Requests verbrauchen jetzt tatsächlich die Request-Quota
-Lösung: Richtige Query-Parameter für API-Football v3
+Fußballwetten-Analyse-App v3.0 (Heute's Spiele + Echte Quoten)
+Zeigt heutige Spiele mit echten Quoten von API-Football
 """
 
 import streamlit as st
@@ -10,7 +9,6 @@ import numpy as np
 import requests
 from datetime import datetime, timedelta
 from scipy.stats import poisson
-from scipy.optimize import minimize
 import time
 
 # ============================================================================
@@ -43,6 +41,13 @@ st.markdown("""
         font-size: 1.8rem !important;
         text-align: center;
     }
+    .value-bet {
+        background-color: #d4edda;
+        padding: 1rem;
+        border-radius: 5px;
+        border-left: 4px solid #28a745;
+        margin-bottom: 0.5rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -72,13 +77,12 @@ if 'debug_mode' not in st.session_state:
     st.session_state.debug_mode = False
 
 # ============================================================================
-# API FUNKTIONEN (KORRIGIERT - VERBRAUCHT JETZT REQUESTS!)
+# API FUNKTIONEN
 # ============================================================================
 
 def get_current_season():
     """Bestimme die aktuelle Saison basierend auf dem Datum"""
     now = datetime.now()
-    # Fußball-Saisons starten üblicherweise im Juli/August
     if now.month >= 7:
         return now.year
     else:
@@ -105,30 +109,21 @@ def test_api_connection(api_key):
                 requests_today = account.get('requests', {}).get('current', 0)
                 requests_limit = account.get('requests', {}).get('limit_day', 0)
                 
-                return True, f"✅ API OK | Requests heute: {requests_today}/{requests_limit}"
+                return True, f"✅ API OK | Requests: {requests_today}/{requests_limit}"
         return False, f"❌ API-Fehler: Status {response.status_code}"
     except Exception as e:
         return False, f"❌ Verbindungsfehler: {str(e)}"
 
-def get_fixtures(api_key, league_id, season, last_n_days=90):
-    """
-    KORRIGIERT: Hole Fixtures mit Datumsbereich statt Status-Filter
-    
-    WICHTIG: Der Status-Parameter mit Bindestrichen (FT-AET-PEN) wird oft gecacht.
-    Besser: Hole alle Spiele eines Zeitraums und filtere dann nach Status.
-    Dies erzwingt echte API-Requests!
-    """
+def get_historical_fixtures(api_key, league_id, season, days_back=120):
+    """Hole historische Spiele für Modell-Training"""
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
         'x-rapidapi-key': api_key
     }
     
-    # Berechne Datumsbreich (letzte N Tage)
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=last_n_days)
+    start_date = end_date - timedelta(days=days_back)
     
-    # WICHTIG: Verwende 'from' und 'to' Parameter statt status
-    # Dies erzwingt einen echten API-Call ohne Cache!
     url = (
         f'https://v3.football.api-sports.io/fixtures'
         f'?league={league_id}'
@@ -137,52 +132,117 @@ def get_fixtures(api_key, league_id, season, last_n_days=90):
         f'&to={end_date.strftime("%Y-%m-%d")}'
     )
     
-    if st.session_state.debug_mode:
-        st.write(f"🔍 **API Request URL:** {url}")
-    
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        
-        if st.session_state.debug_mode:
-            st.write(f"📡 **Response Status:** {response.status_code}")
-            st.write(f"📊 **Response Headers:** {dict(response.headers)}")
         
         if response.status_code == 200:
             data = response.json()
             
-            if st.session_state.debug_mode:
-                st.write(f"📦 **API Response Keys:** {list(data.keys())}")
-                if 'response' in data:
-                    st.write(f"📈 **Anzahl Fixtures:** {len(data['response'])}")
-            
-            if 'response' in data and len(data['response']) > 0:
-                # Filtere nur abgeschlossene Spiele
-                completed_fixtures = [
+            if 'response' in data:
+                # Nur abgeschlossene Spiele für Training
+                completed = [
                     f for f in data['response']
                     if f['fixture']['status']['short'] in ['FT', 'AET', 'PEN']
                 ]
-                
-                if st.session_state.debug_mode:
-                    st.write(f"✅ **Abgeschlossene Spiele:** {len(completed_fixtures)}")
-                
-                return completed_fixtures
-            else:
-                st.warning(f"ℹ️ Keine Daten für Liga {league_id}, Saison {season}")
-                if st.session_state.debug_mode and 'errors' in data:
-                    st.write(f"⚠️ **API Errors:** {data['errors']}")
-                return []
-        else:
-            st.error(f"❌ API-Fehler: Status {response.status_code}")
-            if st.session_state.debug_mode:
-                st.write(f"📄 **Response Text:** {response.text[:500]}")
-            return []
+                return completed
+        return []
             
     except Exception as e:
-        st.error(f"❌ Fehler beim Abrufen der Fixtures: {str(e)}")
+        if st.session_state.debug_mode:
+            st.error(f"Fehler bei historischen Daten: {str(e)}")
         return []
 
+def get_todays_fixtures(api_key, league_id, season):
+    """Hole HEUTIGE Spiele mit Quoten"""
+    headers = {
+        'x-rapidapi-host': 'v3.football.api-sports.io',
+        'x-rapidapi-key': api_key
+    }
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Hole heutige Fixtures
+    url = f'https://v3.football.api-sports.io/fixtures?league={league_id}&season={season}&date={today}'
+    
+    if st.session_state.debug_mode:
+        st.write(f"🔍 Hole heute's Spiele: {url}")
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'response' in data and len(data['response']) > 0:
+                fixtures_with_odds = []
+                
+                for fixture in data['response']:
+                    fixture_id = fixture['fixture']['id']
+                    
+                    # Hole Quoten für dieses Spiel
+                    odds = get_fixture_odds(api_key, fixture_id)
+                    
+                    if odds:
+                        fixture['odds_data'] = odds
+                        fixtures_with_odds.append(fixture)
+                    
+                    time.sleep(0.3)  # Rate limiting
+                
+                return fixtures_with_odds
+        return []
+            
+    except Exception as e:
+        if st.session_state.debug_mode:
+            st.error(f"Fehler bei heutigen Spielen: {str(e)}")
+        return []
+
+def get_fixture_odds(api_key, fixture_id):
+    """Hole Quoten für ein einzelnes Spiel"""
+    headers = {
+        'x-rapidapi-host': 'v3.football.api-sports.io',
+        'x-rapidapi-key': api_key
+    }
+    
+    # Hole Quoten (Bet365 = Bookmaker ID 8)
+    url = f'https://v3.football.api-sports.io/odds?fixture={fixture_id}&bookmaker=8'
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'response' in data and len(data['response']) > 0:
+                bookmaker_data = data['response'][0]
+                
+                if 'bookmakers' in bookmaker_data and len(bookmaker_data['bookmakers']) > 0:
+                    bets = bookmaker_data['bookmakers'][0].get('bets', [])
+                    
+                    # Suche nach "Match Winner" Markt
+                    for bet in bets:
+                        if bet.get('name') == 'Match Winner':
+                            values = bet.get('values', [])
+                            
+                            odds = {}
+                            for v in values:
+                                if v['value'] == 'Home':
+                                    odds['home'] = float(v['odd'])
+                                elif v['value'] == 'Draw':
+                                    odds['draw'] = float(v['odd'])
+                                elif v['value'] == 'Away':
+                                    odds['away'] = float(v['odd'])
+                            
+                            if len(odds) == 3:
+                                return odds
+        return None
+            
+    except Exception as e:
+        if st.session_state.debug_mode:
+            st.write(f"⚠️ Keine Quoten für Fixture {fixture_id}: {str(e)}")
+        return None
+
 def process_fixtures_to_dataframe(fixtures):
-    """Verarbeite API-Response zu DataFrame"""
+    """Verarbeite historische Fixtures zu DataFrame"""
     matches = []
     
     for fixture in fixtures:
@@ -197,8 +257,6 @@ def process_fixtures_to_dataframe(fixtures):
             }
             matches.append(match_data)
         except Exception as e:
-            if st.session_state.debug_mode:
-                st.write(f"⚠️ Fehler bei Fixture: {e}")
             continue
     
     if matches:
@@ -214,17 +272,13 @@ def process_fixtures_to_dataframe(fixtures):
 def calculate_team_strengths(df):
     """Berechne Team-Stärken mit Dixon-Coles Ansatz"""
     teams = pd.concat([df['home_team'], df['away_team']]).unique()
-    n_teams = len(teams)
-    
-    if st.session_state.debug_mode:
-        st.write(f"🏆 **Teams gefunden:** {n_teams}")
     
     # Initialisiere Stärken
     attack = {team: 1.0 for team in teams}
     defense = {team: 1.0 for team in teams}
     home_advantage = 0.3
     
-    # Iterative Optimierung (vereinfacht)
+    # Iterative Optimierung
     for iteration in range(10):
         for team in teams:
             home_matches = df[df['home_team'] == team]
@@ -269,7 +323,7 @@ def calculate_match_probabilities(home_team, away_team, attack, defense, home_ad
     except:
         return {'home_win': 0.33, 'draw': 0.33, 'away_win': 0.33}
 
-def calculate_kelly_bet(probability, odds, fraction=0.2):
+def calculate_kelly_bet(probability, odds, fraction=0.25):
     """Berechne Kelly-Einsatz (konservativ)"""
     if odds <= 1.01:
         return 0
@@ -287,71 +341,94 @@ def calculate_kelly_bet(probability, odds, fraction=0.2):
 # ANALYSE-FUNKTIONEN
 # ============================================================================
 
-def analyze_league(api_key, league_name, league_id, sample_odds=None):
-    """Analysiere eine einzelne Liga"""
+def analyze_league(api_key, league_name, league_id):
+    """Analysiere eine Liga mit heutigen Spielen"""
     season = get_current_season()
     
-    st.info(f"🔍 Analysiere {league_name} (Saison {season})...")
+    st.info(f"🔍 Analysiere {league_name}...")
     
-    # Hole Fixtures mit Datumsbereich (erzwingt echte API-Requests!)
-    fixtures = get_fixtures(api_key, league_id, season, last_n_days=90)
+    # 1. Hole historische Daten für Modell-Training
+    with st.spinner("Lade historische Daten..."):
+        historical = get_historical_fixtures(api_key, league_id, season, days_back=120)
     
-    if not fixtures:
-        st.warning(f"⚠️ Keine Daten für {league_name}")
+    if not historical or len(historical) < 20:
+        st.warning(f"⚠️ Zu wenig historische Daten für {league_name} ({len(historical) if historical else 0} Spiele)")
         return []
     
-    st.success(f"✅ {len(fixtures)} Spiele gefunden")
+    st.success(f"✅ {len(historical)} historische Spiele geladen")
     
-    # Verarbeite Daten
-    df = process_fixtures_to_dataframe(fixtures)
+    # 2. Trainiere Modell
+    df = process_fixtures_to_dataframe(historical)
     
-    if df.empty or len(df) < 10:
-        st.warning(f"⚠️ Zu wenig Daten für {league_name} (nur {len(df)} Spiele)")
+    if df.empty:
+        st.warning(f"⚠️ Keine verwertbaren Daten")
         return []
     
-    # Berechne Stärken
     attack, defense, home_adv = calculate_team_strengths(df)
     
-    # Simuliere Value Bets (mit Beispiel-Quoten falls keine echten vorhanden)
+    # 3. Hole heutige Spiele mit Quoten
+    with st.spinner("Lade heutige Spiele mit Quoten..."):
+        todays_fixtures = get_todays_fixtures(api_key, league_id, season)
+    
+    if not todays_fixtures:
+        st.info(f"ℹ️ Keine Spiele heute für {league_name}")
+        return []
+    
+    st.success(f"✅ {len(todays_fixtures)} Spiele heute gefunden")
+    
+    # 4. Analysiere heutige Spiele
     value_bets = []
     
-    if sample_odds:
-        for match in sample_odds:
-            probs = calculate_match_probabilities(
-                match['home'], 
-                match['away'], 
-                attack, 
-                defense, 
-                home_adv
-            )
+    for fixture in todays_fixtures:
+        try:
+            home_team = fixture['teams']['home']['name']
+            away_team = fixture['teams']['away']['name']
+            fixture_time = datetime.fromisoformat(fixture['fixture']['date'].replace('Z', '+00:00'))
             
-            for outcome, odds in match['odds'].items():
-                if outcome == 'home' and probs['home_win'] * odds > 1.05:
-                    kelly = calculate_kelly_bet(probs['home_win'], odds)
-                    if kelly > 0:
+            odds = fixture.get('odds_data')
+            
+            if not odds:
+                continue
+            
+            # Berechne Wahrscheinlichkeiten
+            probs = calculate_match_probabilities(home_team, away_team, attack, defense, home_adv)
+            
+            # Prüfe alle drei Märkte
+            markets = [
+                ('home', 'Sieg ' + home_team, probs['home_win'], odds.get('home')),
+                ('draw', 'Unentschieden', probs['draw'], odds.get('draw')),
+                ('away', 'Sieg ' + away_team, probs['away_win'], odds.get('away'))
+            ]
+            
+            for market_type, market_name, prob, odd in markets:
+                if odd and prob * odd > 1.05:  # Mindestens 5% Value
+                    kelly = calculate_kelly_bet(prob, odd)
+                    
+                    if kelly > 0.5:  # Mindestens 0.5% Kelly
+                        value = ((prob * odd - 1) * 100)
+                        
                         value_bets.append({
                             'liga': league_name,
-                            'spiel': f"{match['home']} vs {match['away']}",
-                            'wette': f"Sieg {match['home']}",
-                            'wahrscheinlichkeit': f"{probs['home_win']*100:.1f}%",
-                            'quote': f"{odds:.2f}",
-                            'value': f"{((probs['home_win']*odds-1)*100):.1f}%",
-                            'kelly': f"{kelly:.1f}%"
+                            'zeit': fixture_time.strftime('%H:%M'),
+                            'spiel': f"{home_team} vs {away_team}",
+                            'wette': market_name,
+                            'wahrscheinlichkeit': f"{prob*100:.1f}%",
+                            'quote': f"{odd:.2f}",
+                            'value': f"{value:.1f}%",
+                            'kelly_empfehlung': f"{kelly:.1f}%",
+                            'erwarteter_gewinn': f"{value * kelly / 100:.2f}%"
                         })
+        
+        except Exception as e:
+            if st.session_state.debug_mode:
+                st.write(f"⚠️ Fehler bei Spiel: {str(e)}")
+            continue
     
     return value_bets
 
 def run_full_analysis(api_key, selected_leagues):
     """Führe komplette Analyse durch"""
     all_value_bets = []
-    
-    # Beispiel-Quoten für Demo (in Produktion: echte Buchmacher-API)
-    sample_odds = [
-        {'home': 'Bayern München', 'away': 'Borussia Dortmund', 
-         'odds': {'home': 1.85, 'draw': 3.80, 'away': 4.20}},
-        {'home': 'Manchester City', 'away': 'Liverpool', 
-         'odds': {'home': 2.10, 'draw': 3.60, 'away': 3.40}},
-    ]
     
     progress_bar = st.progress(0)
     total_leagues = len(selected_leagues)
@@ -360,10 +437,10 @@ def run_full_analysis(api_key, selected_leagues):
         progress_bar.progress((idx + 1) / total_leagues)
         
         with st.expander(f"📊 {league_name}", expanded=False):
-            value_bets = analyze_league(api_key, league_name, league_id, sample_odds)
+            value_bets = analyze_league(api_key, league_name, league_id)
             all_value_bets.extend(value_bets)
         
-        time.sleep(0.5)  # Rate limiting
+        time.sleep(0.5)
     
     progress_bar.empty()
     return all_value_bets
@@ -374,10 +451,10 @@ def run_full_analysis(api_key, selected_leagues):
 
 def main():
     st.title("⚽ Wetten-Analyst Pro")
-    st.caption(f"v2.2 (API-Fix) | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+    st.caption(f"v3.0 | Heutige Spiele | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     
     # Tabs
-    tab1, tab2, tab3 = st.tabs(["⚙️ Setup", "🎯 Analyse", "❓ Info"])
+    tab1, tab2, tab3 = st.tabs(["⚙️ Setup", "🎯 Heute's Analyse", "❓ Info"])
     
     with tab1:
         st.header("⚙️ Einstellungen")
@@ -386,15 +463,13 @@ def main():
             "API-Football Key",
             type="password",
             value=st.session_state.api_key,
-            help="Kostenloser Key von api-football.com"
+            help="Key von api-football.com"
         )
         st.session_state.api_key = api_key
         
-        # Debug Mode Toggle
         st.session_state.debug_mode = st.checkbox(
-            "🐛 Debug-Modus aktivieren",
-            value=st.session_state.debug_mode,
-            help="Zeigt detaillierte API-Informationen"
+            "🐛 Debug-Modus",
+            value=st.session_state.debug_mode
         )
         
         if api_key:
@@ -422,7 +497,7 @@ def main():
                     selected_leagues[name] = id
     
     with tab2:
-        st.header("🎯 Analyse starten")
+        st.header("🎯 Heute's Value Bets")
         
         if not st.session_state.api_key:
             st.warning("⚠️ Bitte zuerst API-Key eingeben!")
@@ -442,21 +517,40 @@ def main():
             if value_bets:
                 st.success(f"✅ {len(value_bets)} Value Bets gefunden!")
                 
+                # Sortiere nach Value
                 df_bets = pd.DataFrame(value_bets)
+                df_bets = df_bets.sort_values('value', ascending=False)
+                
+                # Zeige als schöne Tabelle
                 st.dataframe(
                     df_bets,
                     use_container_width=True,
                     hide_index=True
                 )
                 
+                # Download
                 st.download_button(
                     "📥 Als CSV Herunterladen",
                     df_bets.to_csv(index=False).encode('utf-8'),
                     f"value_bets_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                     "text/csv"
                 )
+                
+                # Zeige Top 3 hervorgehoben
+                st.divider()
+                st.subheader("🏆 Top 3 Value Bets")
+                
+                for idx, row in df_bets.head(3).iterrows():
+                    st.markdown(f"""
+                    <div class="value-bet">
+                        <h4>🎯 {row['spiel']} ({row['zeit']} Uhr)</h4>
+                        <p><strong>Wette:</strong> {row['wette']} @ {row['quote']}</p>
+                        <p><strong>Value:</strong> {row['value']} | <strong>Kelly:</strong> {row['kelly_empfehlung']} | <strong>Erwarteter Gewinn:</strong> {row['erwarteter_gewinn']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
-                st.info("ℹ️ Keine Value Bets gefunden")
+                st.info("ℹ️ Keine Value Bets für heute gefunden")
+                st.caption("Entweder keine Spiele heute oder keine positiven Wert-Wetten gefunden.")
     
     with tab3:
         st.header("❓ Anleitung")
@@ -464,40 +558,53 @@ def main():
         st.markdown("""
         ### 📚 So funktioniert's:
         
-        1. **API-Key besorgen**: Kostenlos auf [api-football.com](https://www.api-football.com)
-        2. **Ligen auswählen**: Wähle die zu analysierenden Ligen
-        3. **Analyse starten**: Klicke auf "Analyse Starten"
+        1. **API-Key eingeben** (Setup-Tab)
+        2. **Ligen auswählen**
+        3. **"Analyse Starten"** klicken
         
-        ### 🎲 Berechnungsmethode:
+        ### 🎯 Was macht die App?
         
-        - **Dixon-Coles Modell**: Statistisches Modell zur Spielvorhersage
-        - **Kelly-Kriterium**: Optimale Einsatzberechnung (20% konservativ)
-        - **Value Betting**: Wetten mit positivem Erwartungswert
+        1. **Lädt historische Daten** (letzte 120 Tage) zum Modell-Training
+        2. **Trainiert Dixon-Coles Modell** mit diesen Daten
+        3. **Holt HEUTIGE Spiele** mit echten Quoten von Bet365
+        4. **Vergleicht** Modell-Wahrscheinlichkeiten mit Buchmacher-Quoten
+        5. **Zeigt Value Bets** wo deine Wahrscheinlichkeit höher ist
         
-        ### ⚠️ Wichtige Hinweise:
+        ### 💰 Was bedeutet "Value"?
         
-        - Nur zur Information, keine Anlageberatung
-        - Glücksspiel kann süchtig machen
-        - Spiele verantwortungsvoll
+        - **Value = (Wahrscheinlichkeit × Quote - 1) × 100**
+        - **Beispiel**: 40% Wahrscheinlichkeit × Quote 2.80 = 12% Value
+        - **Positiver Value** = statistischer Vorteil gegenüber Buchmacher
         
-        ### 🔧 Fixes in v2.2:
+        ### 📊 Kelly-Kriterium
         
-        ✅ **API-Request-Quota Fix**:
-        - Verwendet jetzt `from` und `to` Parameter statt `status`
-        - Dies erzwingt echte API-Requests ohne Cache
-        - Requests werden jetzt korrekt von der Quota abgezogen
+        - Berechnet optimalen Einsatz basierend auf Value
+        - **Konservativ**: 25% des theoretischen Kelly
+        - **Maximal 10%** der Bankroll pro Wette
         
-        ✅ **Debug-Modus hinzugefügt**:
-        - Aktiviere den Debug-Modus in den Einstellungen
-        - Sieh genau, welche API-Calls gemacht werden
-        - Überprüfe Response-Status und Daten
+        ### ⚠️ Wichtig
         
-        ### 🐛 Debugging:
+        - Dies ist **keine Garantie** für Gewinne
+        - Value Betting ist **langfristige Strategie**
+        - Benötigt große Stichprobe und Disziplin
+        - **Glücksspiel kann süchtig machen**
         
-        Wenn keine Requests verbraucht werden:
-        1. Debug-Modus aktivieren
-        2. API-Status prüfen
-        3. Requests-Counter vor und nach Analyse prüfen
+        ### 🆕 Neu in v3.0
+        
+        ✅ **Echte heutige Spiele** mit Uhrzeit
+        ✅ **Echte Quoten** von Bet365 (via API)
+        ✅ **Alle drei Märkte** (Heim/Unentschieden/Auswärts)
+        ✅ **Sortierung nach Value**
+        ✅ **Top 3 hervorgehoben**
+        
+        ### 📝 API-Nutzung
+        
+        Pro Analyse werden etwa verbraucht:
+        - 1 Request pro Liga (historische Daten)
+        - 1 Request pro Liga (heutige Spiele)
+        - 1 Request pro Spiel (Quoten)
+        
+        **Beispiel**: 3 Ligen mit je 2 Spielen = ca. 12 Requests
         """)
         
         st.divider()
