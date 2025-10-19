@@ -420,6 +420,24 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
                                           home_advantages, form_factors, df):
     """Erweiterte Wahrscheinlichkeitsberechnung"""
     try:
+        # WICHTIG: Prüfe ob Teams überhaupt im Modell existieren
+        if home_team not in attack or away_team not in attack:
+            if st.session_state.get('debug_mode', False):
+                missing = []
+                if home_team not in attack:
+                    missing.append(home_team)
+                if away_team not in attack:
+                    missing.append(away_team)
+                st.warning(f"⚠️ Teams nicht in historischen Daten: {', '.join(missing)}")
+            
+            return {
+                'home_win': 0.33, 
+                'draw': 0.33, 
+                'away_win': 0.33,
+                'expected_goals_home': 1.5,
+                'expected_goals_away': 1.5
+            }
+        
         # Hole Werte mit Fehlerbehandlung
         home_attack = attack.get(home_team, 1.0)
         away_attack = attack.get(away_team, 1.0)
@@ -535,6 +553,21 @@ def analyze_league(api_key, league_name, league_id):
     
     attack, defense, home_advantages, form_factors = calculate_team_strengths_advanced(df)
     
+    # Debug: Zeige berechnete Team-Stärken
+    if st.session_state.get('debug_mode', False):
+        st.subheader("🔬 Berechnete Team-Stärken")
+        debug_data = []
+        for team in list(attack.keys())[:10]:  # Zeige erste 10 Teams
+            debug_data.append({
+                'Team': team,
+                'Angriff': f"{attack[team]:.2f}",
+                'Verteidigung': f"{defense[team]:.2f}",
+                'Heimvorteil': f"{home_advantages[team]:.2f}",
+                'Form': f"{form_factors[team]:.2f}"
+            })
+        st.dataframe(pd.DataFrame(debug_data), use_container_width=True)
+        st.write(f"**Gesamt Teams in Modell:** {len(attack)}")
+    
     with st.spinner("Lade heutige Spiele..."):
         todays_fixtures = get_todays_fixtures(api_key, league_id, season)
     
@@ -560,6 +593,12 @@ def analyze_league(api_key, league_name, league_id):
                 home_team, away_team, attack, defense, 
                 home_advantages, form_factors, df
             )
+            
+            # Prüfe ob Modell valide Werte liefert
+            if probs['home_win'] == 0.33 and probs['draw'] == 0.33 and probs['away_win'] == 0.33:
+                if st.session_state.get('debug_mode', False):
+                    st.warning(f"⚠️ {home_team} vs {away_team}: Teams nicht in historischen Daten gefunden - übersprungen")
+                continue
             
             markets = [
                 ('home', f'Sieg {home_team}', probs['home_win'], odds.get('home')),
