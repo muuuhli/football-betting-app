@@ -1,177 +1,219 @@
-# ⚽ Fußballwetten-Analyst (Cloud Version)
+# ⚽ Football Betting Analyst Pro v2.1
 
-Professionelle Value-Betting-Analyse mit Dixon-Coles-Modell - optimiert für mobile Geräte (iPhone, Android).
+Professionelle Fußballwetten-Analyse mit Dixon-Coles-Modell und Kelly-Kriterium.
 
-## 🌐 Live-Demo
+## 🆕 Version 2.1 - Wichtige Fixes
 
-Die App läuft kostenlos in der Cloud und ist von jedem Gerät erreichbar!
+### ✅ Behobenes Problem: API gibt keine Daten zurück
 
-## 📱 Für iPhone optimiert
+**Das Problem:**
+- Die App verwendete `status=FT` für API-Anfragen
+- API-Football v3 benötigt aber mehrere Status-Werte kombiniert
+- Spiele mit Verlängerung/Elfmeterschießen wurden nicht gefunden
 
-- ✅ Responsive Design für kleine Bildschirme
-- ✅ Touch-optimierte Buttons
-- ✅ Kompakte Darstellung
-- ✅ Schnelle Ladezeiten
-- ✅ Funktioniert in Safari
+**Die Lösung:**
+```python
+# ❌ ALT (funktioniert nicht richtig):
+status = "FT"
 
-## 🚀 Deployment auf Streamlit Cloud (KOSTENLOS)
+# ✅ NEU (korrekt):
+status = "FT-AET-PEN"
+```
 
-### Schritt 1: GitHub Repository erstellen
+**Status-Codes erklärt:**
+- `FT` = Full Time (nach 90 Minuten beendet)
+- `AET` = After Extra Time (nach Verlängerung beendet)
+- `PEN` = After Penalty (nach Elfmeterschießen beendet)
 
-1. Gehe zu [github.com](https://github.com) und logge dich ein (oder erstelle einen Account)
-2. Klicke auf "New Repository" (grüner Button)
-3. Repository-Name: `football-betting-app`
-4. Setze auf "Public"
-5. Klicke "Create repository"
+## 🚀 Quick Start
 
-### Schritt 2: Code hochladen
-
-**Option A: GitHub Web-Interface (einfach)**
-
-1. Klicke auf "uploading an existing file"
-2. Ziehe alle Dateien aus diesem Ordner in das Fenster:
-   - `app.py`
-   - `requirements.txt`
-   - `.gitignore`
-   - `.streamlit/config.toml`
-   - `README.md`
-3. Klicke "Commit changes"
-
-**Option B: Git Command Line (fortgeschritten)**
+### 1. Repository klonen oder herunterladen
 
 ```bash
-cd football_betting_app_cloud
-git init
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin https://github.com/DEIN_USERNAME/football-betting-app.git
-git push -u origin main
+git clone https://github.com/muuuhli/football-betting-app.git
+cd football-betting-app
 ```
 
-### Schritt 3: Auf Streamlit Cloud deployen
+### 2. Dependencies installieren
 
-1. Gehe zu [share.streamlit.io](https://share.streamlit.io)
-2. Klicke "Sign in with GitHub"
-3. Autorisiere Streamlit
-4. Klicke "New app"
-5. Wähle dein Repository: `football-betting-app`
-6. Branch: `main`
-7. Main file path: `app.py`
-8. Klicke "Deploy!"
-
-### Schritt 4: Fertig! 🎉
-
-Nach 2-3 Minuten ist deine App online unter:
-```
-https://DEIN_USERNAME-football-betting-app.streamlit.app
+```bash
+pip install -r requirements.txt
 ```
 
-Diese URL kannst du:
-- ✅ Auf dem iPhone-Homescreen speichern
-- ✅ Mit Freunden teilen
-- ✅ Von überall aufrufen
+### 3. API-Key besorgen
 
-## 📱 iPhone: Als App zum Homescreen hinzufügen
+- Gehe zu [api-football.com](https://www.api-football.com)
+- Registriere dich kostenlos
+- Hole deinen API-Key aus dem Dashboard
 
-1. Öffne die App-URL in Safari
-2. Tippe auf das "Teilen"-Symbol (Quadrat mit Pfeil)
-3. Scrolle runter und tippe "Zum Home-Bildschirm"
-4. Benenne die App (z.B. "Wetten-Analyst")
-5. Tippe "Hinzufügen"
+### 4. App starten
 
-Jetzt hast du ein App-Icon auf deinem iPhone! 🎉
+```bash
+streamlit run app.py
+```
 
-## 🔑 API-Key einrichten
+## 📦 Deployment auf Streamlit Cloud
 
-1. Registriere dich kostenlos auf [api-football.com](https://www.api-football.com/)
-2. Kopiere deinen API-Key
-3. Öffne die App auf deinem iPhone
-4. Tippe auf "⚙️ Einstellungen"
-5. Füge deinen API-Key ein
+### Option A: Über GitHub (empfohlen)
 
-**Kostenloser Plan:**
-- 100 Anfragen pro Tag
-- Völlig ausreichend für tägliche Analysen
+1. **Repository auf GitHub pushen:**
+   ```bash
+   git add .
+   git commit -m "v2.1 - Fixed API status parameter"
+   git push origin main
+   ```
 
-## ⚙️ Features
+2. **Auf Streamlit Cloud deployen:**
+   - Gehe zu [share.streamlit.io](https://share.streamlit.io)
+   - Klicke "New app"
+   - Wähle dein Repository
+   - Branch: `main`
+   - Main file: `app.py`
+   - Klicke "Deploy"
+
+3. **Secrets konfigurieren (optional):**
+   - Settings → Secrets
+   - Füge hinzu:
+     ```toml
+     api_key = "dein_api_key_hier"
+     ```
+
+### Option B: Lokales Deployment
+
+1. **Streamlit lokal starten:**
+   ```bash
+   streamlit run app.py
+   ```
+
+2. **Oder mit Docker:**
+   ```bash
+   docker build -t betting-app .
+   docker run -p 8501:8501 betting-app
+   ```
+
+## 🔧 Konfiguration
+
+### Unterstützte Ligen
+
+Die App unterstützt folgende Top-Ligen:
+
+- 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League (39)
+- 🇩🇪 Bundesliga (78)
+- 🇩🇪 2. Bundesliga (79)
+- 🇪🇸 La Liga (140)
+- 🇪🇸 Segunda División (141)
+- 🇮🇹 Serie A (135)
+- 🇮🇹 Serie B (136)
+- 🇫🇷 Ligue 1 (61)
+- 🇫🇷 Ligue 2 (62)
+
+### Saison-Auswahl
+
+Die App erkennt automatisch die aktuelle Saison:
+- **Juli - Dezember**: Aktuelles Jahr (z.B. 2024 für Saison 2024/25)
+- **Januar - Juni**: Vorheriges Jahr (z.B. 2024 für Saison 2024/25)
+
+## 📊 Features
 
 ### Dixon-Coles Modell
-- Professionelles statistisches Modell
-- Korrektur für niedrige Torzahlen
-- Optimiert durch Maximum-Likelihood
+- Statistische Spielvorhersage
+- Team-Stärken (Angriff/Verteidigung)
+- Heimvorteil-Berechnung
+
+### Kelly-Kriterium
+- Optimale Einsatzberechnung
+- 20% Kelly (konservativ)
+- Bankroll-Management
 
 ### Value Betting
-- Automatische Identifikation von Wetten mit >5% Edge
-- Faire Quoten-Berechnung
-- Expected Value Analyse
+- Nur Wetten mit positivem Erwartungswert
+- Mindestens 5% Edge
+- Automatische Filterung
 
-### Bankroll Management
-- Quarter Kelly Criterion
-- Automatische Einsatzberechnung
-- ROI-Tracking
+## 🐛 Troubleshooting
 
-### Mobile-Optimierungen
-- Kompaktes Design
-- Touch-freundliche Buttons
-- Schnelle Performance
-- Offline-fähige Berechnungen
+### Problem: "Keine Daten gefunden"
 
-## 🔒 Datenschutz
+**Ursache:** Falsche Saison oder Status-Parameter
 
-- ✅ Keine Daten werden gespeichert
-- ✅ API-Key bleibt in deiner Session
-- ✅ Alle Berechnungen lokal im Browser
-- ✅ Keine Cookies oder Tracking
+**Lösung:**
+1. Prüfe, ob die aktuelle Saison korrekt erkannt wird
+2. Stelle sicher, dass `COMPLETED_STATUSES = "FT-AET-PEN"` verwendet wird
+3. Teste mit `include_live=True` für mehr Ergebnisse
 
-## 💡 Tipps für iPhone-Nutzung
+### Problem: "API-Fehler 401"
 
-1. **Querformat nutzen** für Tabellen
-2. **Einstellungen einklappen** für mehr Platz
-3. **Als Webapp speichern** für schnellen Zugriff
-4. **WLAN nutzen** für API-Anfragen
+**Ursache:** Ungültiger oder abgelaufener API-Key
 
-## 🐛 Fehlerbehebung
+**Lösung:**
+1. Gehe zu [api-football.com](https://www.api-football.com)
+2. Überprüfe deinen API-Key
+3. Erneuere bei Bedarf
 
-### "API-Fehler"
-- Überprüfe deinen API-Key
-- Prüfe dein API-Limit auf api-football.com
+### Problem: "Rate Limit erreicht"
 
-### "Zu wenig Daten"
-- Wähle eine andere Liga
-- Stelle sicher, dass die Saison läuft
+**Ursache:** Zu viele API-Anfragen
 
-### App lädt nicht
-- Prüfe deine Internetverbindung
-- Aktualisiere die Seite (nach unten ziehen in Safari)
+**Lösung:**
+1. Warte 1 Minute
+2. Reduziere Anzahl der Ligen
+3. Upgrade API-Plan bei Bedarf
 
-## 📊 Unterstützte Ligen
+## 🔍 Debug-Modus
 
-- 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League (England)
-- 🇩🇪 Bundesliga (Deutschland)
-- 🇪🇸 La Liga (Spanien)
-- 🇮🇹 Serie A (Italien)
-- 🇫🇷 Ligue 1 (Frankreich)
+Für detaillierte Fehlersuche:
 
-## ⚠️ Wichtige Hinweise
+```python
+# In der App aktivieren:
+# Settings → Debug-Modus aktivieren
 
-- Sportwetten sind riskant
-- Nur Geld einsetzen, das du verlieren kannst
-- Value Betting funktioniert nur langfristig (100+ Wetten)
-- Keine Garantie für Gewinne
+# Oder im Code:
+st.session_state.debug_mode = True
+```
 
-## 🆘 Support
+## 📝 Changelog
 
-Bei Problemen:
-1. Lies die Fehlermeldung
-2. Überprüfe deine Einstellungen
-3. Erstelle ein Issue auf GitHub
+### v2.1 (2024-10-19)
+- ✅ **FIX**: Korrekter Status-Parameter `FT-AET-PEN`
+- ✅ **FIX**: Automatische Saison-Erkennung
+- ✅ Bessere Fehlerbehandlung
+- ✅ Verbesserte UI-Meldungen
+
+### v2.0 (2024-10-18)
+- 🎯 Dixon-Coles Implementierung
+- 📊 Kelly-Kriterium Integration
+- 🎨 Mobile-optimiertes Design
+- 🔧 Debug-Modus
+
+## ⚠️ Disclaimer
+
+**Wichtige Hinweise:**
+- Diese App dient nur zur Information
+- Keine Anlageberatung
+- Glücksspiel kann süchtig machen
+- Spiele verantwortungsvoll
+- Hilfe: www.bzga.de
 
 ## 📄 Lizenz
 
-Nur für Bildungszwecke. Keine Haftung für Verluste.
+MIT License - Siehe LICENSE Datei
+
+## 🤝 Contributing
+
+Pull Requests sind willkommen!
+
+1. Fork das Projekt
+2. Erstelle deinen Feature Branch
+3. Commit deine Änderungen
+4. Push zum Branch
+5. Öffne einen Pull Request
+
+## 📧 Support
+
+Bei Fragen oder Problemen:
+- GitHub Issues erstellen
+- [api-football.com Dokumentation](https://www.api-football.com/documentation-v3)
 
 ---
 
-**Viel Erfolg! ⚽📱**
-
+**Viel Erfolg! 🍀**
