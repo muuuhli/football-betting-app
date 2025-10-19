@@ -1,6 +1,6 @@
 """
-Fußballwetten-Analyse-App v4.0 Pro - FIXED
-Fehlerbehandlung optimiert für Teams und HTTP Headers
+Fußballwetten-Analyse-App v4.0 Pro - FIXED v2
+Vollständige Fehlerbehandlung mit Debug-Info
 """
 
 import streamlit as st
@@ -143,7 +143,7 @@ def test_api_connection(api_key):
 
 def get_historical_fixtures(api_key, league_id, season, days_back=150):
     """
-    FIXED: Bessere Fehlerbehandlung ohne Emojis in Ausgaben
+    FIXED: Bessere Fehlerbehandlung ohne Emojis in HTTP-Requests
     """
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
@@ -176,31 +176,75 @@ def get_historical_fixtures(api_key, league_id, season, days_back=150):
         return []
             
     except Exception as e:
-        # FIXED: Speichere Fehler in Session State statt direkt auszugeben
+        # Speichere Fehler für spätere Anzeige
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
-        st.session_state.api_errors.append(f"Fehler bei historischen Daten: {str(e)}")
+        st.session_state.api_errors.append(f"Historical data error: {str(e)}")
         return []
 
-def get_todays_fixtures(api_key, league_id):
+def get_todays_fixtures(api_key, league_id, season):
+    """
+    FIXED: Mit season Parameter und verbessertem Debugging
+    """
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
         'x-rapidapi-key': api_key
     }
     
-    today = datetime.now().strftime('%Y-%m-%d')
-    url = f'https://v3.football.api-sports.io/fixtures?league={league_id}&date={today}'
+    today = datetime.now().strftime("%Y-%m-%d")
+    url = f'https://v3.football.api-sports.io/fixtures?league={league_id}&season={season}&date={today}'
+    
+    # Debug: Speichere Request-Info
+    if 'fixture_requests' not in st.session_state:
+        st.session_state.fixture_requests = []
+    st.session_state.fixture_requests.append({
+        'url': url,
+        'date': today,
+        'league_id': league_id,
+        'season': season
+    })
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
+        
         if response.status_code == 200:
             data = response.json()
-            return data.get('response', [])
+            
+            # Debug: Speichere Rohdaten
+            if st.session_state.get('debug_mode', False):
+                if 'fixture_responses' not in st.session_state:
+                    st.session_state.fixture_responses = []
+                st.session_state.fixture_responses.append({
+                    'league_id': league_id,
+                    'status': response.status_code,
+                    'fixtures_found': len(data.get('response', []))
+                })
+            
+            if 'response' in data and len(data['response']) > 0:
+                fixtures_with_odds = []
+                
+                for fixture in data['response']:
+                    fixture_id = fixture['fixture']['id']
+                    odds = get_fixture_odds(api_key, fixture_id)
+                    
+                    if odds:
+                        fixture['odds_data'] = odds
+                        fixtures_with_odds.append(fixture)
+                    
+                    time.sleep(0.3)  # Rate limiting
+                
+                return fixtures_with_odds
+        
         return []
-    except:
+            
+    except Exception as e:
+        if 'fixture_errors' not in st.session_state:
+            st.session_state.fixture_errors = []
+        st.session_state.fixture_errors.append(f"League {league_id}: {str(e)}")
         return []
 
-def get_odds_for_fixture(api_key, fixture_id):
+def get_fixture_odds(api_key, fixture_id):
+    """Hole Quoten für ein Spiel von Bet365"""
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
         'x-rapidapi-key': api_key
@@ -209,16 +253,21 @@ def get_odds_for_fixture(api_key, fixture_id):
     url = f'https://v3.football.api-sports.io/odds?fixture={fixture_id}&bookmaker=8'
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=10)
+        
         if response.status_code == 200:
             data = response.json()
-            if data.get('response') and len(data['response']) > 0:
-                bookmaker = data['response'][0].get('bookmakers', [])
-                if bookmaker:
-                    bets = bookmaker[0].get('bets', [])
+            
+            if 'response' in data and len(data['response']) > 0:
+                bookmaker_data = data['response'][0]
+                
+                if 'bookmakers' in bookmaker_data and len(bookmaker_data['bookmakers']) > 0:
+                    bets = bookmaker_data['bookmakers'][0].get('bets', [])
+                    
                     for bet in bets:
                         if bet.get('name') == 'Match Winner':
                             values = bet.get('values', [])
+                            
                             odds = {}
                             for v in values:
                                 if v['value'] == 'Home':
@@ -227,22 +276,46 @@ def get_odds_for_fixture(api_key, fixture_id):
                                     odds['draw'] = float(v['odd'])
                                 elif v['value'] == 'Away':
                                     odds['away'] = float(v['odd'])
-                            return odds
+                            
+                            if len(odds) == 3:
+                                return odds
         return None
-    except:
+            
+    except Exception as e:
         return None
+
+def process_fixtures_to_dataframe(fixtures):
+    """Konvertiere Fixtures zu DataFrame"""
+    matches = []
+    
+    for fixture in fixtures:
+        try:
+            matches.append({
+                'date': datetime.strptime(fixture['fixture']['date'][:10], '%Y-%m-%d'),
+                'home': fixture['teams']['home']['name'],
+                'away': fixture['teams']['away']['name'],
+                'score_home': fixture['goals']['home'],
+                'score_away': fixture['goals']['away']
+            })
+        except:
+            continue
+    
+    return pd.DataFrame(matches)
 
 # ============================================================================
 # DIXON-COLES MODELL - ERWEITERT
 # ============================================================================
 
-def calculate_team_strengths(df):
-    """Berechne Team-Stärken aus historischen Daten"""
+def calculate_team_strengths_advanced(df):
+    """Berechne erweiterte Team-Stärken"""
     teams = set(df['home'].unique()).union(set(df['away'].unique()))
     
     attack = {team: 1.0 for team in teams}
     defense = {team: 1.0 for team in teams}
+    home_advantages = {team: 0.3 for team in teams}
+    form_factors = {team: 1.0 for team in teams}
     
+    # Basis-Stärken berechnen
     iterations = 20
     for _ in range(iterations):
         new_attack = {}
@@ -269,53 +342,43 @@ def calculate_team_strengths(df):
         attack = new_attack
         defense = new_defense
     
-    return attack, defense
-
-def calculate_home_advantage(df):
-    """Berechne Heimvorteil für jedes Team"""
-    home_advantages = {}
-    teams = set(df['home'].unique())
-    
+    # Heimvorteil berechnen
     for team in teams:
         home_games = df[df['home'] == team]
-        if len(home_games) > 0:
+        if len(home_games) > 3:
             home_goals = home_games['score_home'].mean()
             away_goals = home_games['score_away'].mean()
             home_advantages[team] = max(0.1, min(0.5, (home_goals - away_goals) / 3))
-        else:
-            home_advantages[team] = 0.3
     
-    return home_advantages
-
-def calculate_form_factor(team, df, days=30):
-    """Berechne Form-Faktor basierend auf letzten Spielen"""
-    cutoff_date = datetime.now() - timedelta(days=days)
+    # Form-Faktoren (letzte 30 Tage)
+    cutoff_date = datetime.now() - timedelta(days=30)
     recent = df[df['date'] >= cutoff_date]
     
-    team_games = recent[(recent['home'] == team) | (recent['away'] == team)]
+    for team in teams:
+        team_games = recent[(recent['home'] == team) | (recent['away'] == team)]
+        
+        if len(team_games) > 0:
+            points = 0
+            for _, game in team_games.iterrows():
+                if game['home'] == team:
+                    if game['score_home'] > game['score_away']:
+                        points += 3
+                    elif game['score_home'] == game['score_away']:
+                        points += 1
+                else:
+                    if game['score_away'] > game['score_home']:
+                        points += 3
+                    elif game['score_away'] == game['score_home']:
+                        points += 1
+            
+            avg_points = points / len(team_games)
+            form_factors[team] = 0.7 + (avg_points / 3.0) * 0.6
     
-    if len(team_games) == 0:
-        return 1.0
-    
-    points = 0
-    for _, game in team_games.iterrows():
-        if game['home'] == team:
-            if game['score_home'] > game['score_away']:
-                points += 3
-            elif game['score_home'] == game['score_away']:
-                points += 1
-        else:
-            if game['score_away'] > game['score_home']:
-                points += 3
-            elif game['score_away'] == game['score_home']:
-                points += 1
-    
-    avg_points = points / len(team_games)
-    return 0.7 + (avg_points / 3.0) * 0.6
+    return attack, defense, home_advantages, form_factors
 
-def calculate_h2h_factor(home_team, away_team, df, days=730):
-    """Head-to-Head Faktor"""
-    cutoff_date = datetime.now() - timedelta(days=days)
+def calculate_h2h_factor(home_team, away_team, df):
+    """Head-to-Head Faktor (letzte 2 Jahre)"""
+    cutoff_date = datetime.now() - timedelta(days=730)
     h2h = df[
         ((df['home'] == home_team) & (df['away'] == away_team)) |
         ((df['home'] == away_team) & (df['away'] == home_team))
@@ -338,12 +401,11 @@ def calculate_h2h_factor(home_team, away_team, df, days=730):
 def calculate_match_probabilities_advanced(home_team, away_team, attack, defense,
                                           home_advantages, form_factors, df):
     """
-    FIXED: Erweiterte Wahrscheinlichkeitsberechnung mit verbesserter Fehlerbehandlung
+    FIXED: Erweiterte Wahrscheinlichkeitsberechnung
     """
     try:
-        # WICHTIG: Prüfe ob Teams überhaupt im Modell existieren
+        # WICHTIG: Teams-Check VOR allen Berechnungen
         if home_team not in attack or away_team not in attack:
-            # FIXED: Sammle fehlende Teams ohne direkte st.warning Ausgabe
             if 'missing_teams' not in st.session_state:
                 st.session_state.missing_teams = []
             
@@ -355,7 +417,6 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
             
             st.session_state.missing_teams.append(f"{home_team} vs {away_team}: {', '.join(missing)}")
             
-            # Gib Default-Werte zurück
             return {
                 'home_win': 0.33, 
                 'draw': 0.33, 
@@ -364,51 +425,34 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
                 'expected_goals_away': 1.5
             }
         
-        # Hole Werte mit Fehlerbehandlung
+        # FIXED: Alle Werte holen
         home_attack = attack.get(home_team, 1.0)
         away_attack = attack.get(away_team, 1.0)
         home_defense = defense.get(home_team, 1.0)
         away_defense = defense.get(away_team, 1.0)
         
-        # FIXED: Lambda-Werte IMMER initialisieren BEVOR sie verwendet werden
+        # FIXED: Lambda-Werte IMMER initialisieren
         base_lambda_home = home_attack * away_defense
         base_lambda_away = away_attack * home_defense
         
-        # Heimvorteil
         home_adv = home_advantages.get(home_team, 0.3)
         lambda_home = base_lambda_home * (1 + home_adv)
-        lambda_away = base_lambda_away  # Kein Heimvorteil für Auswärtsteam
+        lambda_away = base_lambda_away
         
-        # Form-Faktoren
         home_form = form_factors.get(home_team, 1.0)
         away_form = form_factors.get(away_team, 1.0)
         
         lambda_home *= home_form
         lambda_away *= away_form
         
-        # Head-to-Head nur auf Heimteam anwenden
         h2h_factor = calculate_h2h_factor(home_team, away_team, df)
         lambda_home *= h2h_factor
         
-        # Debug-Ausgabe NACH allen Berechnungen
-        if st.session_state.get('debug_mode', False):
-            if 'debug_output' not in st.session_state:
-                st.session_state.debug_output = []
-            st.session_state.debug_output.append({
-                'match': f"{home_team} vs {away_team}",
-                'home_attack': home_attack,
-                'away_attack': away_attack,
-                'home_defense': home_defense,
-                'away_defense': away_defense,
-                'lambda_home': lambda_home,
-                'lambda_away': lambda_away
-            })
-        
-        # Sicherstellen dass Lambda-Werte sinnvoll sind
+        # Werte begrenzen
         lambda_home = max(0.5, min(5.0, lambda_home))
         lambda_away = max(0.5, min(5.0, lambda_away))
         
-        # Poisson-Verteilung
+        # Poisson-Matrix
         max_goals = 6
         prob_matrix = np.zeros((max_goals + 1, max_goals + 1))
         
@@ -435,7 +479,6 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
         }
         
     except Exception as e:
-        # FIXED: Fehler in Session State speichern statt direkt ausgeben
         if 'calculation_errors' not in st.session_state:
             st.session_state.calculation_errors = []
         st.session_state.calculation_errors.append(f"{home_team} vs {away_team}: {str(e)}")
@@ -448,171 +491,171 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
             'expected_goals_away': 1.5
         }
 
-# ============================================================================
-# ANALYSE-FUNKTIONEN
-# ============================================================================
+def calculate_kelly_stake(prob, odd, bankroll, kelly_fraction, max_bet_percent):
+    """Berechne Kelly-Einsatz"""
+    if prob <= 0 or odd <= 1:
+        return 0, 0
+    
+    kelly = (prob * odd - 1) / (odd - 1)
+    kelly_stake = kelly * kelly_fraction
+    
+    if kelly_stake <= 0:
+        return 0, 0
+    
+    stake = kelly_stake * bankroll
+    max_stake = bankroll * (max_bet_percent / 100)
+    stake = min(stake, max_stake)
+    
+    stake_percent = (stake / bankroll) * 100
+    
+    return round(stake, 2), round(stake_percent, 2)
 
-def load_historical_data(api_key, league_id, season):
-    """Lade historische Daten und konvertiere zu DataFrame"""
-    fixtures = get_historical_fixtures(api_key, league_id, season)
-    
-    if not fixtures:
-        return None
-    
-    data = []
-    for f in fixtures:
-        data.append({
-            'date': datetime.strptime(f['fixture']['date'][:10], '%Y-%m-%d'),
-            'home': f['teams']['home']['name'],
-            'away': f['teams']['away']['name'],
-            'score_home': f['goals']['home'],
-            'score_away': f['goals']['away']
-        })
-    
-    return pd.DataFrame(data)
-
-def load_todays_fixtures_with_odds(api_key, league_id):
-    """Lade heutige Spiele mit echten Quoten"""
-    fixtures = get_todays_fixtures(api_key, league_id)
-    
-    if not fixtures:
-        return []
-    
-    matches = []
-    for f in fixtures:
-        odds = get_odds_for_fixture(api_key, f['fixture']['id'])
-        
-        if odds and all(k in odds for k in ['home', 'draw', 'away']):
-            matches.append({
-                'fixture_id': f['fixture']['id'],
-                'home_team': f['teams']['home']['name'],
-                'away_team': f['teams']['away']['name'],
-                'kickoff': f['fixture']['date'],
-                'odds_home': odds['home'],
-                'odds_draw': odds['draw'],
-                'odds_away': odds['away']
-            })
-        
-        time.sleep(0.5)
-    
-    return matches
+# ============================================================================
+# ANALYSE
+# ============================================================================
 
 def analyze_league(api_key, league_name, league_id):
     """
-    FIXED: Hauptanalysefunktion mit verbesserter Fehlersammlung
+    FIXED: Hauptanalysefunktion mit vollständigem Debugging
     """
     # Reset Fehlerspeicher
     st.session_state.missing_teams = []
     st.session_state.calculation_errors = []
-    st.session_state.debug_output = []
     st.session_state.api_errors = []
+    st.session_state.fixture_requests = []
+    st.session_state.fixture_responses = []
+    st.session_state.fixture_errors = []
     
     season = get_current_season()
     
-    st.info(f"Lade historische Daten für {league_name} (Saison {season})...")
-    df = load_historical_data(api_key, league_id, season)
+    st.info(f"Analysiere {league_name}...")
     
-    if df is None or len(df) < 50:
-        st.warning(f"Zu wenig Daten für {league_name}")
+    # Historische Daten laden
+    historical = get_historical_fixtures(api_key, league_id, season, days_back=150)
+    
+    if not historical or len(historical) < 30:
+        st.warning(f"Zu wenig historische Daten für {league_name}")
         return []
     
-    st.success(f"{len(df)} historische Spiele geladen")
+    st.success(f"{len(historical)} historische Spiele geladen")
     
-    attack, defense = calculate_team_strengths(df)
-    home_advantages = calculate_home_advantage(df)
+    df = process_fixtures_to_dataframe(historical)
+    if df.empty:
+        return []
     
-    form_factors = {}
-    for team in attack.keys():
-        form_factors[team] = calculate_form_factor(team, df)
+    attack, defense, home_advantages, form_factors = calculate_team_strengths_advanced(df)
     
     if st.session_state.get('debug_mode', False):
-        st.write(f"**Gesamt Teams in Modell:** {len(attack)}")
+        st.write(f"**Teams im Modell:** {len(attack)}")
     
-    st.info("Lade heutige Spiele und Quoten...")
-    todays_matches = load_todays_fixtures_with_odds(api_key, league_id)
+    # Heutige Spiele laden
+    todays_fixtures = get_todays_fixtures(api_key, league_id, season)
     
-    if not todays_matches:
-        st.info(f"Keine Spiele heute in {league_name}")
+    # DEBUG: Zeige API-Request Info
+    if st.session_state.get('debug_mode', False) and st.session_state.fixture_requests:
+        with st.expander("🔍 API Request Details"):
+            for req in st.session_state.fixture_requests:
+                st.json(req)
+        
+        if st.session_state.fixture_responses:
+            with st.expander("📊 API Response Details"):
+                for resp in st.session_state.fixture_responses:
+                    st.json(resp)
+    
+    if not todays_fixtures:
+        msg = f"Keine Spiele heute in {league_name}"
+        if st.session_state.get('debug_mode', False):
+            msg += f" (Datum: {datetime.now().strftime('%Y-%m-%d')}, Season: {season})"
+        st.info(msg)
         return []
     
-    st.success(f"{len(todays_matches)} Spiele heute")
+    st.success(f"{len(todays_fixtures)} Spiele heute gefunden")
     
     value_bets = []
     
-    for match in todays_matches:
-        home_team = match['home_team']
-        away_team = match['away_team']
-        
-        # FIXED: Prüfe VORHER ob Teams im Modell sind
-        if home_team not in attack or away_team not in attack:
-            continue  # Überspringe ohne Berechnung
-        
-        probs = calculate_match_probabilities_advanced(
-            home_team, away_team, attack, defense,
-            home_advantages, form_factors, df
-        )
-        
-        odds = {
-            'home': match['odds_home'],
-            'draw': match['odds_draw'],
-            'away': match['odds_away']
-        }
-        
-        # Kelly-Kriterium für alle 3 Märkte
-        for market, prob in [('home', probs['home_win']), 
-                             ('draw', probs['draw']), 
-                             ('away', probs['away_win'])]:
+    for fixture in todays_fixtures:
+        try:
+            home_team = fixture['teams']['home']['name']
+            away_team = fixture['teams']['away']['name']
+            fixture_time = datetime.fromisoformat(fixture['fixture']['date'].replace('Z', '+00:00'))
             
-            odd = odds[market]
-            implied_prob = 1 / odd
-            edge = prob - implied_prob
+            odds = fixture.get('odds_data')
+            if not odds:
+                continue
             
-            if edge > 0.05:
-                kelly = (prob * odd - 1) / (odd - 1)
-                kelly_stake = kelly * st.session_state.kelly_fraction
-                
-                if kelly_stake > 0:
-                    max_stake = st.session_state.bankroll * (st.session_state.max_bet_percent / 100)
-                    stake = min(kelly_stake * st.session_state.bankroll, max_stake)
+            # Teams-Check VORHER
+            if home_team not in attack or away_team not in attack:
+                continue
+            
+            probs = calculate_match_probabilities_advanced(
+                home_team, away_team, attack, defense, 
+                home_advantages, form_factors, df
+            )
+            
+            # Prüfe ob Default-Werte (= Teams fehlen)
+            if probs['home_win'] == 0.33 and probs['draw'] == 0.33 and probs['away_win'] == 0.33:
+                continue
+            
+            markets = [
+                ('home', f'Sieg {home_team}', probs['home_win'], odds.get('home')),
+                ('draw', 'Unentschieden', probs['draw'], odds.get('draw')),
+                ('away', f'Sieg {away_team}', probs['away_win'], odds.get('away'))
+            ]
+            
+            for market_type, market_name, prob, odd in markets:
+                if odd and prob * odd > 1.05:
+                    stake, stake_percent = calculate_kelly_stake(
+                        prob, odd, st.session_state.bankroll,
+                        st.session_state.kelly_fraction,
+                        st.session_state.max_bet_percent
+                    )
                     
-                    expected_return = (prob * odd * stake) - stake
-                    
-                    value_bets.append({
-                        'league': league_name,
-                        'home_team': home_team,
-                        'away_team': away_team,
-                        'market': market,
-                        'model_prob': prob,
-                        'odds': odd,
-                        'implied_prob': implied_prob,
-                        'edge': edge,
-                        'kelly_pct': kelly * 100,
-                        'stake': stake,
-                        'expected_return': expected_return,
-                        'kickoff': match['kickoff'],
-                        'fixture_id': match['fixture_id']
-                    })
+                    if stake >= 1:
+                        value = ((prob * odd - 1) * 100)
+                        expected_profit = stake * (prob * odd - 1)
+                        
+                        value_bets.append({
+                            'liga': league_name,
+                            'zeit': fixture_time.strftime('%H:%M'),
+                            'spiel': f"{home_team} vs {away_team}",
+                            'wette': market_name,
+                            'wahrscheinlichkeit': f"{prob*100:.1f}%",
+                            'quote': f"{odd:.2f}",
+                            'value': value,
+                            'einsatz': stake,
+                            'einsatz_prozent': stake_percent,
+                            'erwarteter_gewinn': expected_profit,
+                            'xg_home': probs['expected_goals_home'],
+                            'xg_away': probs['expected_goals_away'],
+                            'form_home': form_factors.get(home_team, 1.0),
+                            'form_away': form_factors.get(away_team, 1.0),
+                            '_raw_stake': stake,
+                            '_raw_odds': odd,
+                            '_raw_prob': prob
+                        })
+        
+        except Exception as e:
+            if 'processing_errors' not in st.session_state:
+                st.session_state.processing_errors = []
+            st.session_state.processing_errors.append(str(e))
+            continue
     
-    # FIXED: Zeige gesammelte Fehler NACH der Analyse
-    if st.session_state.api_errors and st.session_state.debug_mode:
-        with st.expander("API Fehler"):
-            for err in st.session_state.api_errors:
-                st.text(err)
-    
-    if st.session_state.missing_teams:
-        with st.expander("Teams nicht im Modell"):
-            for msg in st.session_state.missing_teams:
-                st.text(msg)
-    
-    if st.session_state.calculation_errors and st.session_state.debug_mode:
-        with st.expander("Berechnungsfehler"):
-            for err in st.session_state.calculation_errors:
-                st.text(err)
-    
-    if st.session_state.debug_output and st.session_state.debug_mode:
-        with st.expander("Debug Berechnungen"):
-            for debug in st.session_state.debug_output:
-                st.json(debug)
+    # FIXED: Zeige gesammelte Fehler
+    if st.session_state.get('debug_mode', False):
+        if st.session_state.missing_teams:
+            with st.expander("⚠️ Teams nicht im Modell"):
+                for msg in st.session_state.missing_teams:
+                    st.text(msg)
+        
+        if st.session_state.calculation_errors:
+            with st.expander("⚠️ Berechnungsfehler"):
+                for err in st.session_state.calculation_errors:
+                    st.text(err)
+        
+        if st.session_state.fixture_errors:
+            with st.expander("⚠️ Fixture-Ladefehler"):
+                for err in st.session_state.fixture_errors:
+                    st.text(err)
     
     return value_bets
 
@@ -676,7 +719,7 @@ with tab4:
     st.session_state.debug_mode = debug
     
     if debug:
-        st.info("Debug-Modus aktiviert: Detaillierte Ausgaben werden angezeigt")
+        st.info("Debug-Modus aktiviert: Detaillierte API-Requests und Fehler werden angezeigt")
 
 with tab2:
     st.header("💰 Wett-Tracking")
@@ -694,20 +737,20 @@ with tab2:
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        if st.button("Gewonnen", key=f"won_{idx}"):
+                        if st.button("✅ Gewonnen", key=f"won_{idx}"):
                             actual_return = bet['stake'] * bet['odds']
                             update_bet_result(idx, 'won', actual_return)
-                            st.success("Ergebnis gespeichert!")
+                            st.success("Gespeichert!")
                             st.rerun()
                     
                     with col2:
-                        if st.button("Verloren", key=f"lost_{idx}"):
+                        if st.button("❌ Verloren", key=f"lost_{idx}"):
                             update_bet_result(idx, 'lost', 0)
-                            st.success("Ergebnis gespeichert!")
+                            st.success("Gespeichert!")
                             st.rerun()
                     
                     with col3:
-                        if st.button("Abbrechen", key=f"cancel_{idx}"):
+                        if st.button("🗑️ Abbrechen", key=f"cancel_{idx}"):
                             st.session_state.bet_history.pop(idx)
                             st.rerun()
     else:
@@ -734,17 +777,20 @@ with tab3:
         st.divider()
         
         df_hist = pd.DataFrame(st.session_state.bet_history)
-        df_hist['date'] = pd.to_datetime(df_hist['timestamp']).dt.date
-        
-        st.dataframe(df_hist[['date', 'match', 'market', 'stake', 'odds', 'status', 'result']])
+        if not df_hist.empty:
+            df_hist['date'] = pd.to_datetime(df_hist['timestamp']).dt.date
+            st.dataframe(df_hist[['date', 'match', 'market', 'stake', 'odds', 'status', 'result']])
     else:
         st.info("Noch keine abgeschlossenen Wetten")
 
 with tab1:
     st.header("📊 Value Bets Analyse")
     
+    # Zeige aktuelles Datum
+    st.caption(f"Suche Spiele für: {datetime.now().strftime('%Y-%m-%d (%A)')}")
+    
     if not st.session_state.api_key:
-        st.warning("Bitte API-Key in Einstellungen eingeben!")
+        st.warning("⚠️ Bitte API-Key in Einstellungen eingeben!")
     else:
         selected_leagues = st.multiselect(
             "Ligen auswählen",
@@ -766,10 +812,10 @@ with tab1:
                     time.sleep(1)
                 
                 if all_value_bets:
-                    st.success(f"{len(all_value_bets)} Value Bets gefunden!")
+                    st.success(f"✅ {len(all_value_bets)} Value Bets gefunden!")
                     
                     df_bets = pd.DataFrame(all_value_bets)
-                    df_bets = df_bets.sort_values('expected_return', ascending=False)
+                    df_bets = df_bets.sort_values('erwarteter_gewinn', ascending=False)
                     
                     for idx, bet in df_bets.iterrows():
                         market_emoji = {
@@ -778,45 +824,53 @@ with tab1:
                             'away': '✈️'
                         }
                         
+                        market_type = 'home' if 'Sieg' in bet['wette'] and bet['spiel'].split(' vs ')[0] in bet['wette'] else (
+                            'draw' if 'Unent' in bet['wette'] else 'away'
+                        )
+                        
                         with st.container():
                             st.markdown(f"""
                             <div class="value-bet">
-                                <h3>{market_emoji[bet['market']]} {bet['home_team']} vs {bet['away_team']}</h3>
-                                <p><strong>Liga:</strong> {bet['league']} | <strong>Markt:</strong> {bet['market'].upper()}</p>
-                                <p><strong>Quote:</strong> {bet['odds']:.2f} | <strong>Modell-Wahrscheinlichkeit:</strong> {bet['model_prob']*100:.1f}%</p>
-                                <p><strong>Edge:</strong> {bet['edge']*100:.1f}% | <strong>Kelly:</strong> {bet['kelly_pct']:.1f}%</p>
-                                <p><strong>Empfohlener Einsatz:</strong> {bet['stake']:.2f}€ | <strong>Erwarteter Gewinn:</strong> {bet['expected_return']:.2f}€</p>
+                                <h3>{bet['spiel']} - {bet['zeit']} Uhr</h3>
+                                <p><strong>Wette:</strong> {bet['wette']} | <strong>Quote:</strong> {bet['quote']}</p>
+                                <p><strong>Wahrscheinlichkeit:</strong> {bet['wahrscheinlichkeit']} | <strong>Value:</strong> {bet['value']:.1f}%</p>
+                                <p><strong>Empfohlener Einsatz:</strong> {bet['einsatz']:.2f}€ ({bet['einsatz_prozent']:.1f}%)</p>
+                                <p><strong>Erwarteter Gewinn:</strong> {bet['erwarteter_gewinn']:.2f}€</p>
                             </div>
                             """, unsafe_allow_html=True)
                             
-                            if st.button("Platziert", key=f"track_{idx}"):
+                            if st.button("📝 Tracken", key=f"track_{idx}"):
                                 bet_info = {
-                                    'match': f"{bet['home_team']} vs {bet['away_team']}",
-                                    'market': bet['market'],
-                                    'odds': bet['odds'],
-                                    'stake': bet['stake'],
-                                    'expected_return': bet['expected_return']
+                                    'match': bet['spiel'],
+                                    'market': bet['wette'],
+                                    'odds': bet['_raw_odds'],
+                                    'stake': bet['_raw_stake'],
+                                    'expected_return': bet['erwarteter_gewinn']
                                 }
                                 add_bet_to_history(bet_info)
-                                st.success("Getrackt!")
+                                st.success("✅ Zur Historie hinzugefügt!")
                 else:
-                    st.info("Keine Value Bets gefunden")
+                    st.info("ℹ️ Keine Value Bets gefunden")
             else:
-                st.warning("Bitte mindestens eine Liga auswählen")
+                st.warning("⚠️ Bitte mindestens eine Liga auswählen")
 
 st.divider()
 with st.expander("ℹ️ Über diese App"):
     st.markdown("""
-    ### Features v4.0
-    - **Dixon-Coles Modell** mit erweiterten Statistiken
-    - **Kelly-Kriterium** für optimales Bankroll-Management
-    - **Wett-Tracking** mit Performance-Analyse
-    - **Erweiterte Faktoren**: Form, Head-to-Head, Heimvorteil
+    ### Features v4.0 Pro - Fixed
+    - ✅ **Korrekte HTTP-Header** (keine Emoji-Fehler mehr)
+    - ✅ **Robuste Lambda-Berechnung** (keine UnboundLocalError mehr)
+    - 📊 **Verbessertes Debugging** (API-Requests sichtbar)
+    - 🎯 **Dixon-Coles Modell** mit erweiterten Statistiken
+    - 💰 **Kelly-Kriterium** für optimales Bankroll-Management
+    - 📈 **Wett-Tracking** mit Performance-Analyse
     
-    ### Wichtig
-    - Nur mit echten historischen Daten von API-Football
-    - Bankroll-Management beachten
-    - Verantwortungsbewusst wetten
+    ### Debug-Modus
+    Aktiviere den Debug-Modus in den Einstellungen um zu sehen:
+    - API-Request Details (URL, Parameter)
+    - API-Response Status
+    - Fehlende Teams
+    - Berechnungsfehler
     """)
     
-    st.caption("Glücksspiel kann süchtig machen. Hilfe: www.bzga.de")
+    st.caption("⚠️ Glücksspiel kann süchtig machen. Hilfe: www.bzga.de")
