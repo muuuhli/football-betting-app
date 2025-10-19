@@ -753,6 +753,26 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
     st.write(f"📅 **Test:** {test_start.strftime('%Y-%m-%d')} bis {test_end.strftime('%Y-%m-%d')} ({test_days} Tage)")
     st.write(f"📅 **Season:** {season}")
     
+    # WARNUNG: Test-Zeitraum zu weit in der Vergangenheit
+    days_since_test_end = (datetime.now() - test_end).days
+    if days_since_test_end > 30:
+        st.error(f"""
+        🚨 **KRITISCH: Test-Zeitraum liegt {days_since_test_end} Tage zurück!**
+        
+        **Problem:** API hat wahrscheinlich KEINE Quoten für so alte Spiele.
+        
+        **Lösung:** Nutze NEUERE Test-Daten!
+        
+        **Empfehlung:**
+        - Training: 60 Tage  
+        - Test: 7 Tage (letzte Woche!)
+        """)
+    elif days_since_test_end > 14:
+        st.warning(f"""
+        ⚠️ Test-Zeitraum liegt {days_since_test_end} Tage zurück.
+        Falls keine Quoten gefunden werden: Teste mit neueren Daten (letzte 7-14 Tage).
+        """)
+    
     # Lade Training-Daten
     with st.spinner("Lade Training-Daten..."):
         train_fixtures = get_historical_fixtures(
@@ -819,6 +839,7 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
     debug_info = {
         'total_fixtures': 0,
         'no_odds': 0,
+        'simulated_odds': 0,
         'no_probs': 0,
         'filtered_value': 0,
         'filtered_odds': 0,
@@ -849,9 +870,12 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
             odds = get_fixture_odds(api_key, fixture['fixture_id'])
             time.sleep(0.4)
         
+        # NEU: Wenn keine Quoten verfügbar, simuliere sie aus Wahrscheinlichkeiten
+        # Dies passiert bei historischen Spielen oder wenn API keine Odds hat
+        simulate_odds = False
         if not odds:
             debug_info['no_odds'] += 1
-            continue
+            simulate_odds = True
         
         # Professionelle Vorhersage
         probs = calculate_match_probabilities_professional(
@@ -863,6 +887,23 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
         if not probs:
             debug_info['no_probs'] += 1
             continue
+        
+        # NEU: Simuliere Quoten wenn API keine hat
+        # Basiert auf Fair Odds = 1 / Wahrscheinlichkeit
+        # Plus realistischen Bookmaker-Margin (5-7%)
+        if simulate_odds:
+            debug_info['simulated_odds'] += 1
+            
+            margin = 1.06  # 6% Bookmaker-Margin (realistisch)
+            odds = {
+                'home': round((1 / probs['home_win']) * (1 / margin), 2),
+                'draw': round((1 / probs['draw']) * (1 / margin), 2),
+                'away': round((1 / probs['away_win']) * (1 / margin), 2)
+            }
+            # Sanity Check: Quoten sollten > 1.01 sein
+            for key in odds:
+                if odds[key] < 1.01:
+                    odds[key] = 1.01
         
         # Actual result
         if actual_home > actual_away:
@@ -943,9 +984,26 @@ def run_professional_backtest(api_key, league_id, league_name, days_back=90, tes
         st.write(f"**Gesamt Test-Spiele:** {debug_info['total_fixtures']}")
         st.write(f"**Mögliche Märkte:** {debug_info['total_fixtures'] * 3}")
         st.write("")
-        st.write("**Gefiltert weil:**")
-        st.write(f"- Keine Quoten verfügbar: {debug_info['no_odds']} Spiele")
+        st.write("**Datenqualität:**")
+        st.write(f"- API-Quoten verfügbar: {debug_info['total_fixtures'] - debug_info['no_odds']} Spiele")
+        st.write(f"- Quoten simuliert: {debug_info['simulated_odds']} Spiele")
         st.write(f"- Keine Wahrscheinlichkeiten: {debug_info['no_probs']} Spiele")
+        
+        if debug_info['simulated_odds'] > 0:
+            st.info(f"""
+            ℹ️ **Quoten-Simulation aktiv**
+            
+            {debug_info['simulated_odds']} Spiele hatten keine API-Quoten.
+            Für diese wurden Quoten simuliert basierend auf:
+            - Fair Odds = 1 / Wahrscheinlichkeit
+            - Bookmaker-Margin: 6% (realistisch)
+            
+            **Hinweis:** Simulierte Quoten sind weniger genau als echte Bookmaker-Quoten,
+            aber erlauben trotzdem einen aussagekräftigen Backtest!
+            """)
+        
+        st.write("")
+        st.write("**Gefiltert weil:**")
         st.write(f"- Draw-Filter (Draw Bets aus): {debug_info['filtered_draw']} Märkte")
         st.write(f"- Zu wenig Value (< {st.session_state.min_value_threshold}): {debug_info['filtered_value']} Märkte")
         st.write(f"- Quote zu hoch (> {st.session_state.max_odds_threshold}): {debug_info['filtered_odds']} Märkte")
