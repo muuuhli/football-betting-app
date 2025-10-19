@@ -1,5 +1,5 @@
 """
-Fußballwetten-Analyse-App (Verbesserte Version)
+Fußballwetten-Analyse-App (Verbesserte Version mit Debugging)
 Automatische Analyse aller Top-Ligen mit Dixon-Coles-Modell
 Optimiert für mobile Geräte mit verbesserter API-Integration
 """
@@ -13,6 +13,12 @@ from scipy.stats import poisson
 from scipy.optimize import minimize
 import time
 import json
+import traceback
+import logging
+
+# Logging-Setup für Debugging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # KONFIGURATION
@@ -108,13 +114,28 @@ if 'bankroll' not in st.session_state:
 def check_api_status(api_key):
     """Überprüft API-Key und zeigt verbleibende Anfragen"""
     if not api_key:
+        st.error("❌ Kein API-Key vorhanden")
         return None
+    
+    # Debug-Info anzeigen
+    if st.session_state.get('debug_mode', False):
+        st.info(f"🔍 Debug: Prüfe API-Key (erste 10 Zeichen): {api_key[:10]}...")
         
     url = "https://v3.football.api-sports.io/status"
     headers = {'x-apisports-key': api_key}
     
     try:
         response = requests.get(url, headers=headers, timeout=5)
+        
+        # Debug-Info
+        if st.session_state.get('debug_mode', False):
+            st.info(f"🔍 Debug: API Status Response Code: {response.status_code}")
+            if response.text:
+                try:
+                    st.json(response.json())
+                except:
+                    st.text(f"Response Text: {response.text[:500]}")
+        
         if response.status_code == 200:
             data = response.json()
             if data.get('response'):
@@ -127,8 +148,23 @@ def check_api_status(api_key):
                     'current': requests_info.get('current', 0),
                     'remaining': requests_info.get('limit_day', 0) - requests_info.get('current', 0)
                 }
+            else:
+                if st.session_state.get('debug_mode', False):
+                    st.warning(f"🔍 Debug: Keine 'response' in API-Antwort gefunden")
+                    st.json(data)
+        else:
+            st.error(f"❌ API-Fehler: Status Code {response.status_code}")
+            if st.session_state.get('debug_mode', False):
+                st.text(f"Response: {response.text[:500]}")
+                
+    except requests.exceptions.Timeout:
+        st.error("⏱️ API-Timeout: Verbindung dauerte zu lange")
+    except requests.exceptions.ConnectionError:
+        st.error("🔌 Verbindungsfehler: Bitte Internetverbindung prüfen")
     except Exception as e:
-        st.error(f"API-Verbindungsfehler: {str(e)}")
+        st.error(f"❌ API-Verbindungsfehler: {str(e)}")
+        if st.session_state.get('debug_mode', False):
+            st.text(f"Traceback:\n{traceback.format_exc()}")
     
     return {'valid': False}
 
@@ -149,10 +185,27 @@ def load_fixtures(_api_key, league_id, season):
         'to': next_week
     }
     
+    # Debug-Info
+    if st.session_state.get('debug_mode', False):
+        st.info(f"🔍 Debug: Lade Fixtures für Liga {league_id}, Saison {season}")
+        st.text(f"Zeitraum: {today} bis {next_week}")
+    
     try:
         response = requests.get(url, headers=headers, params=params, timeout=15)
+        
+        # Debug Response
+        if st.session_state.get('debug_mode', False):
+            st.info(f"🔍 Debug: Fixtures Response Code: {response.status_code}")
+            
         if response.status_code == 200:
             data = response.json()
+            
+            # Debug: Zeige Antwort-Struktur
+            if st.session_state.get('debug_mode', False):
+                st.text(f"Anzahl Fixtures empfangen: {len(data.get('response', []))}")
+                if data.get('errors') and len(data['errors']) > 0:
+                    st.warning(f"API Errors: {data['errors']}")
+            
             fixtures = data.get('response', [])
             
             # Filtere nur wirklich zukünftige Spiele
@@ -162,17 +215,36 @@ def load_fixtures(_api_key, league_id, season):
                     fixture_date = datetime.fromisoformat(fixture['fixture']['date'].replace('Z', '+00:00'))
                     if fixture_date > datetime.now(fixture_date.tzinfo):
                         future_fixtures.append(fixture)
-                except:
+                    elif st.session_state.get('debug_mode', False):
+                        st.text(f"Übersprungen (vergangen): {fixture['teams']['home']['name']} vs {fixture['teams']['away']['name']}")
+                except Exception as e:
+                    if st.session_state.get('debug_mode', False):
+                        st.warning(f"Fehler beim Parsen von Fixture: {e}")
                     continue
             
+            if st.session_state.get('debug_mode', False):
+                st.success(f"✅ {len(future_fixtures)} zukünftige Fixtures gefunden")
+            
             return future_fixtures
+            
         elif response.status_code == 204:
-            return []  # Keine Daten verfügbar
-        else:
+            if st.session_state.get('debug_mode', False):
+                st.warning("⚠️ Keine Daten verfügbar (204)")
             return []
+        else:
+            if st.session_state.get('debug_mode', False):
+                st.error(f"❌ Fixtures Fehler: Status {response.status_code}")
+                st.text(f"Response: {response.text[:500]}")
+            return []
+            
     except requests.exceptions.Timeout:
+        if st.session_state.get('debug_mode', False):
+            st.error("⏱️ Timeout beim Laden der Fixtures")
         return []
-    except Exception:
+    except Exception as e:
+        if st.session_state.get('debug_mode', False):
+            st.error(f"❌ Fehler beim Laden der Fixtures: {str(e)}")
+            st.text(f"Traceback:\n{traceback.format_exc()}")
         return []
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -187,17 +259,42 @@ def load_historical_data(_api_key, league_id, season):
         'status': 'FT'  # Nur beendete Spiele
     }
     
+    # Debug-Info
+    if st.session_state.get('debug_mode', False):
+        st.info(f"🔍 Debug: Lade historische Daten für Liga {league_id}, Saison {season}")
+    
     try:
         response = requests.get(url, headers=headers, params=params, timeout=30)
+        
+        # Debug Response
+        if st.session_state.get('debug_mode', False):
+            st.info(f"🔍 Debug: Historical Data Response Code: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
-            return data.get('response', [])
-        return []
-    except Exception:
+            historical_data = data.get('response', [])
+            
+            if st.session_state.get('debug_mode', False):
+                st.success(f"✅ {len(historical_data)} historische Spiele geladen")
+                if len(historical_data) > 0:
+                    # Zeige Beispielspiel
+                    example = historical_data[0]
+                    st.text(f"Beispiel: {example['teams']['home']['name']} {example['goals']['home']} - {example['goals']['away']} {example['teams']['away']['name']}")
+            
+            return historical_data
+        else:
+            if st.session_state.get('debug_mode', False):
+                st.error(f"❌ Historical Data Fehler: Status {response.status_code}")
+                st.text(f"Response: {response.text[:500]}")
+            return []
+    except Exception as e:
+        if st.session_state.get('debug_mode', False):
+            st.error(f"❌ Fehler beim Laden historischer Daten: {str(e)}")
+            st.text(f"Traceback:\n{traceback.format_exc()}")
         return []
 
 def load_odds(api_key, fixture_id):
-    """Lädt Quoten für ein Spiel"""
+    """Lädt Quoten für ein Spiel mit Debug-Informationen"""
     url = "https://v3.football.api-sports.io/odds"
     headers = {'x-apisports-key': api_key}
     params = {
@@ -205,11 +302,21 @@ def load_odds(api_key, fixture_id):
         'bet': 1  # Match Winner
     }
     
+    if st.session_state.get('debug_mode', False):
+        st.text(f"🎲 Lade Quoten für Fixture ID: {fixture_id}")
+    
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        if st.session_state.get('debug_mode', False):
+            st.text(f"Odds Response Code: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
             odds_response = data.get('response', [])
+            
+            if st.session_state.get('debug_mode', False):
+                st.text(f"Anzahl Buchmacher: {len(odds_response[0].get('bookmakers', [])) if odds_response else 0}")
             
             if odds_response and len(odds_response) > 0:
                 best_odds = {'home': 0, 'draw': 0, 'away': 0}
@@ -231,10 +338,18 @@ def load_odds(api_key, fixture_id):
                                     best_odds['away'] = odd
                 
                 if best_odds['home'] > 0 and best_odds['draw'] > 0 and best_odds['away'] > 0:
+                    if st.session_state.get('debug_mode', False):
+                        st.text(f"Beste Quoten: H:{best_odds['home']:.2f} D:{best_odds['draw']:.2f} A:{best_odds['away']:.2f}")
                     return best_odds
+                elif st.session_state.get('debug_mode', False):
+                    st.warning(f"⚠️ Unvollständige Quoten: H:{best_odds['home']} D:{best_odds['draw']} A:{best_odds['away']}")
+            elif st.session_state.get('debug_mode', False):
+                st.warning("⚠️ Keine Quoten-Daten in der Antwort")
         
         return None
-    except:
+    except Exception as e:
+        if st.session_state.get('debug_mode', False):
+            st.error(f"❌ Fehler beim Laden der Quoten: {str(e)}")
         return None
 
 # ============================================================================
@@ -294,8 +409,14 @@ def dc_log_like(params, home_goals, away_goals, home_teams, away_teams, team_lis
     return -log_like
 
 def train_dixon_coles_model(historical_data):
-    """Trainiert verbessertes Dixon-Coles Modell"""
+    """Trainiert verbessertes Dixon-Coles Modell mit Debugging"""
+    # Debug-Info
+    if st.session_state.get('debug_mode', False):
+        st.info(f"🔍 Debug: Starte Modelltraining mit {len(historical_data) if historical_data else 0} historischen Spielen")
+    
     if not historical_data or len(historical_data) < 30:
+        if st.session_state.get('debug_mode', False):
+            st.warning(f"⚠️ Zu wenig historische Daten: {len(historical_data) if historical_data else 0} Spiele")
         return None
     
     matches = []
@@ -313,10 +434,17 @@ def train_dixon_coles_model(historical_data):
                         'home_goals': home_goals,
                         'away_goals': away_goals
                     })
-        except:
+        except Exception as e:
+            if st.session_state.get('debug_mode', False):
+                st.text(f"Fehler beim Verarbeiten eines Spiels: {e}")
             continue
     
+    if st.session_state.get('debug_mode', False):
+        st.text(f"Verarbeitete Matches: {len(matches)}")
+    
     if len(matches) < 30:
+        if st.session_state.get('debug_mode', False):
+            st.warning(f"⚠️ Zu wenig gültige Matches nach Verarbeitung: {len(matches)}")
         return None
     
     df = pd.DataFrame(matches)
@@ -327,15 +455,27 @@ def train_dixon_coles_model(historical_data):
     team_counts = home_counts.add(away_counts, fill_value=0)
     valid_teams = team_counts[team_counts >= 5].index.tolist()
     
+    if st.session_state.get('debug_mode', False):
+        st.text(f"Teams mit >= 5 Spielen: {len(valid_teams)}")
+    
     df = df[(df['home_team'].isin(valid_teams)) & (df['away_team'].isin(valid_teams))]
     
     if len(df) < 30:
+        if st.session_state.get('debug_mode', False):
+            st.warning(f"⚠️ Zu wenig Daten nach Teamfilterung: {len(df)}")
         return None
     
     teams = sorted(list(set(df['home_team'].unique()) | set(df['away_team'].unique())))
     n_teams = len(teams)
     
+    if st.session_state.get('debug_mode', False):
+        st.text(f"Finale Teamanzahl: {n_teams}")
+        st.text(f"Finale Spielanzahl: {len(df)}")
+        st.text(f"Durchschn. Tore - Heim: {df['home_goals'].mean():.2f}, Auswärts: {df['away_goals'].mean():.2f}")
+    
     if n_teams < 8:
+        if st.session_state.get('debug_mode', False):
+            st.warning(f"⚠️ Zu wenig Teams für Modell: {n_teams}")
         return None
     
     def constraint_func(params):
@@ -353,6 +493,9 @@ def train_dixon_coles_model(historical_data):
     bounds = [(None, None)] * (2 * n_teams) + [(0, 1), (-0.3, 0.3)]
     
     try:
+        if st.session_state.get('debug_mode', False):
+            st.text("🤖 Starte Optimierung...")
+        
         result = minimize(
             dc_log_like,
             initial_params,
@@ -369,18 +512,40 @@ def train_dixon_coles_model(historical_data):
             options={'maxiter': 200, 'disp': False}
         )
         
+        if st.session_state.get('debug_mode', False):
+            st.text(f"Optimierung abgeschlossen - Funktionswert: {result.fun:.2f}")
+            st.text(f"Erfolg: {result.success}, Iterationen: {result.nit}")
+        
         if result.fun < np.inf:
             params = result.x
+            
+            attack_dict = {teams[i]: params[i] for i in range(n_teams)}
+            defence_dict = {teams[i]: params[n_teams + i] for i in range(n_teams)}
+            
+            if st.session_state.get('debug_mode', False):
+                st.success("✅ Modell erfolgreich trainiert!")
+                st.text(f"Home Advantage: {params[-2]:.3f}")
+                st.text(f"Rho: {params[-1]:.3f}")
+                
+                # Top Teams
+                best_attack = max(attack_dict.items(), key=lambda x: x[1])
+                worst_attack = min(attack_dict.items(), key=lambda x: x[1])
+                st.text(f"Bester Angriff: {best_attack[0][:20]} ({best_attack[1]:.3f})")
+                st.text(f"Schwächster Angriff: {worst_attack[0][:20]} ({worst_attack[1]:.3f})")
+            
             return {
                 'teams': teams,
-                'attack': {teams[i]: params[i] for i in range(n_teams)},
-                'defence': {teams[i]: params[n_teams + i] for i in range(n_teams)},
+                'attack': attack_dict,
+                'defence': defence_dict,
                 'home_adv': params[-2],
                 'rho': params[-1],
                 'matches_used': len(df),
                 'convergence': result.success
             }
-    except:
+    except Exception as e:
+        if st.session_state.get('debug_mode', False):
+            st.error(f"❌ Fehler bei Modelloptimierung: {str(e)}")
+            st.text(f"Traceback:\n{traceback.format_exc()}")
         pass
     
     return None
@@ -476,14 +641,19 @@ def calculate_kelly_stake(fair_prob, market_odds, bankroll, fraction=0.2):
 # ============================================================================
 
 def analyze_leagues(api_key, selected_leagues, season):
-    """Analysiert ausgewählte Ligen"""
+    """Analysiert ausgewählte Ligen mit erweitertem Debugging"""
     all_value_bets = []
     analysis_summary = {
         'total_fixtures_analyzed': 0,
         'models_trained': 0,
         'value_bets_found': 0,
-        'api_calls_used': 0
+        'api_calls_used': 0,
+        'errors': []
     }
+    
+    # Debug-Info
+    if st.session_state.get('debug_mode', False):
+        st.info(f"🔍 Debug: Starte Analyse für {len(selected_leagues)} Ligen, Saison {season}")
     
     progress_container = st.container()
     with progress_container:
@@ -500,102 +670,144 @@ def analyze_leagues(api_key, selected_leagues, season):
         progress_bar.progress(progress)
         status_text.text(f"Analysiere {league_name}... ({idx + 1}/{total_leagues})")
         
-        # Lade historische Daten
-        details_text.text("📊 Lade historische Daten...")
-        historical_data = load_historical_data(api_key, league_id, season)
-        analysis_summary['api_calls_used'] += 1
-        
-        if not historical_data or len(historical_data) < 30:
-            details_text.warning(f"⚠️ {league_name}: Nicht genug Daten")
-            time.sleep(1)
-            continue
-        
-        # Trainiere Modell
-        details_text.text("🤖 Trainiere Modell...")
-        model = train_dixon_coles_model(historical_data)
-        
-        if not model:
-            details_text.warning(f"⚠️ {league_name}: Modelltraining fehlgeschlagen")
-            time.sleep(1)
-            continue
-        
-        analysis_summary['models_trained'] += 1
-        
-        # Lade kommende Spiele
-        details_text.text("🔮 Lade kommende Spiele...")
-        fixtures = load_fixtures(api_key, league_id, season)
-        analysis_summary['api_calls_used'] += 1
-        
-        if not fixtures:
-            continue
-        
-        # Analysiere Spiele
-        for fixture in fixtures[:5]:
-            try:
-                home_team = fixture['teams']['home']['name']
-                away_team = fixture['teams']['away']['name']
-                fixture_id = fixture['fixture']['id']
-                fixture_date = fixture['fixture']['date']
-                
-                prediction = predict_match(model, home_team, away_team)
-                
-                if not prediction:
-                    continue
-                
-                analysis_summary['total_fixtures_analyzed'] += 1
-                
-                # Lade Quoten
-                odds = load_odds(api_key, fixture_id)
-                analysis_summary['api_calls_used'] += 1
-                
-                if not odds:
-                    continue
-                
-                # Value-Berechnung
-                value_home = calculate_value(prediction['prob_home'], odds['home'])
-                value_draw = calculate_value(prediction['prob_draw'], odds['draw'])
-                value_away = calculate_value(prediction['prob_away'], odds['away'])
-                
-                markets = [
-                    ('Heimsieg', value_home, odds['home'], prediction['prob_home'], '1'),
-                    ('Unentschieden', value_draw, odds['draw'], prediction['prob_draw'], 'X'),
-                    ('Auswärtssieg', value_away, odds['away'], prediction['prob_away'], '2')
-                ]
-                
-                best_market = max(markets, key=lambda x: x[1])
-                
-                if best_market[1] >= 5:  # Mindestens 5% Value
-                    stake = calculate_kelly_stake(best_market[3], best_market[2], st.session_state.bankroll)
-                    
-                    if stake > 0:
-                        try:
-                            match_datetime = datetime.fromisoformat(fixture_date.replace('Z', '+00:00'))
-                            formatted_date = match_datetime.strftime('%d.%m. %H:%M')
-                        except:
-                            formatted_date = fixture_date
-                        
-                        all_value_bets.append({
-                            'Liga': league_name,
-                            'Spiel': f"{home_team} - {away_team}",
-                            'Datum': formatted_date,
-                            'Tipp': best_market[4],
-                            'Markt': best_market[0],
-                            'Quote': f"{best_market[2]:.2f}",
-                            'Fair': f"{best_market[3]*100:.1f}%",
-                            'Value': f"{best_market[1]:.1f}%",
-                            'Einsatz': f"€{stake:.2f}",
-                            'Konfidenz': prediction['confidence']
-                        })
-                        analysis_summary['value_bets_found'] += 1
-                    
-            except:
+        try:
+            # Lade historische Daten
+            details_text.text("📊 Lade historische Daten...")
+            historical_data = load_historical_data(api_key, league_id, season)
+            analysis_summary['api_calls_used'] += 1
+            
+            if not historical_data or len(historical_data) < 30:
+                error_msg = f"⚠️ {league_name}: Nicht genug Daten ({len(historical_data) if historical_data else 0} Spiele)"
+                details_text.warning(error_msg)
+                if st.session_state.get('debug_mode', False):
+                    analysis_summary['errors'].append(error_msg)
+                time.sleep(1)
                 continue
             
-            time.sleep(0.5)
+            # Trainiere Modell
+            details_text.text("🤖 Trainiere Modell...")
+            model = train_dixon_coles_model(historical_data)
+            
+            if not model:
+                error_msg = f"⚠️ {league_name}: Modelltraining fehlgeschlagen"
+                details_text.warning(error_msg)
+                if st.session_state.get('debug_mode', False):
+                    analysis_summary['errors'].append(error_msg)
+                time.sleep(1)
+                continue
+            
+            analysis_summary['models_trained'] += 1
+            
+            # Lade kommende Spiele
+            details_text.text("🔮 Lade kommende Spiele...")
+            fixtures = load_fixtures(api_key, league_id, season)
+            analysis_summary['api_calls_used'] += 1
+            
+            if not fixtures:
+                if st.session_state.get('debug_mode', False):
+                    error_msg = f"⚠️ {league_name}: Keine kommenden Spiele gefunden"
+                    analysis_summary['errors'].append(error_msg)
+                continue
+            
+            if st.session_state.get('debug_mode', False):
+                st.text(f"📅 {len(fixtures)} kommende Spiele gefunden")
+            
+            # Analysiere Spiele
+            for fixture in fixtures[:5]:
+                try:
+                    home_team = fixture['teams']['home']['name']
+                    away_team = fixture['teams']['away']['name']
+                    fixture_id = fixture['fixture']['id']
+                    fixture_date = fixture['fixture']['date']
+                    
+                    if st.session_state.get('debug_mode', False):
+                        details_text.text(f"⚽ Analysiere: {home_team} vs {away_team}")
+                    
+                    prediction = predict_match(model, home_team, away_team)
+                    
+                    if not prediction:
+                        if st.session_state.get('debug_mode', False):
+                            st.text(f"⚠️ Keine Vorhersage möglich für {home_team} vs {away_team}")
+                        continue
+                    
+                    analysis_summary['total_fixtures_analyzed'] += 1
+                    
+                    # Lade Quoten
+                    odds = load_odds(api_key, fixture_id)
+                    analysis_summary['api_calls_used'] += 1
+                    
+                    if not odds:
+                        if st.session_state.get('debug_mode', False):
+                            st.text(f"⚠️ Keine Quoten für {home_team} vs {away_team}")
+                        continue
+                    
+                    # Value-Berechnung
+                    value_home = calculate_value(prediction['prob_home'], odds['home'])
+                    value_draw = calculate_value(prediction['prob_draw'], odds['draw'])
+                    value_away = calculate_value(prediction['prob_away'], odds['away'])
+                    
+                    if st.session_state.get('debug_mode', False):
+                        st.text(f"Value: H:{value_home:.1f}% D:{value_draw:.1f}% A:{value_away:.1f}%")
+                    
+                    markets = [
+                        ('Heimsieg', value_home, odds['home'], prediction['prob_home'], '1'),
+                        ('Unentschieden', value_draw, odds['draw'], prediction['prob_draw'], 'X'),
+                        ('Auswärtssieg', value_away, odds['away'], prediction['prob_away'], '2')
+                    ]
+                    
+                    best_market = max(markets, key=lambda x: x[1])
+                    
+                    if best_market[1] >= 5:  # Mindestens 5% Value
+                        stake = calculate_kelly_stake(best_market[3], best_market[2], st.session_state.bankroll)
+                        
+                        if stake > 0:
+                            try:
+                                match_datetime = datetime.fromisoformat(fixture_date.replace('Z', '+00:00'))
+                                formatted_date = match_datetime.strftime('%d.%m. %H:%M')
+                            except:
+                                formatted_date = fixture_date
+                            
+                            all_value_bets.append({
+                                'Liga': league_name,
+                                'Spiel': f"{home_team} - {away_team}",
+                                'Datum': formatted_date,
+                                'Tipp': best_market[4],
+                                'Markt': best_market[0],
+                                'Quote': f"{best_market[2]:.2f}",
+                                'Fair': f"{best_market[3]*100:.1f}%",
+                                'Value': f"{best_market[1]:.1f}%",
+                                'Einsatz': f"€{stake:.2f}",
+                                'Konfidenz': prediction['confidence']
+                            })
+                            analysis_summary['value_bets_found'] += 1
+                            
+                            if st.session_state.get('debug_mode', False):
+                                st.success(f"✅ Value Bet gefunden: {home_team} vs {away_team}")
+                        
+                except Exception as e:
+                    if st.session_state.get('debug_mode', False):
+                        st.error(f"❌ Fehler bei Spielanalyse: {str(e)}")
+                        analysis_summary['errors'].append(f"Spielanalyse-Fehler: {str(e)}")
+                    continue
+                
+                time.sleep(0.5)
+                
+        except Exception as e:
+            error_msg = f"❌ Fehler bei Liga {league_name}: {str(e)}"
+            if st.session_state.get('debug_mode', False):
+                st.error(error_msg)
+                st.text(f"Traceback:\n{traceback.format_exc()}")
+                analysis_summary['errors'].append(error_msg)
     
     progress_bar.empty()
     status_text.empty()
     details_text.empty()
+    
+    # Debug-Zusammenfassung
+    if st.session_state.get('debug_mode', False) and analysis_summary['errors']:
+        with st.expander("🔍 Debug: Fehlerzusammenfassung", expanded=False):
+            for error in analysis_summary['errors']:
+                st.text(f"• {error}")
     
     return all_value_bets, analysis_summary
 
@@ -617,7 +829,22 @@ def main():
     with tab_settings:
         st.header("⚙️ Einstellungen")
         
+        # Debug-Modus Toggle
+        st.subheader("🔧 Debug-Modus")
+        debug_mode = st.checkbox(
+            "Debug-Modus aktivieren",
+            value=st.session_state.get('debug_mode', False),
+            help="Zeigt detaillierte Informationen zur Fehlersuche an"
+        )
+        st.session_state.debug_mode = debug_mode
+        
+        if debug_mode:
+            st.info("🔍 Debug-Modus ist AKTIV - Zusätzliche Informationen werden angezeigt")
+        
+        st.divider()
+        
         # API-Key
+        st.subheader("🔑 API-Konfiguration")
         api_key = st.text_input(
             "API-Football Key",
             type="password",
@@ -701,45 +928,83 @@ def main():
                 st.subheader(f"🎯 {len(analysis['bets'])} Value Bets gefunden")
                 
                 df_bets = pd.DataFrame(analysis['bets'])
-                st.dataframe(df_bets, use_container_width=True, hide_index=True)
+                st.dataframe(df_bets, use_container_width=True, height=400)
                 
-                csv = df_bets.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "📥 Als CSV herunterladen",
-                    csv,
-                    f"value_bets_{datetime.now().strftime('%Y%m%d')}.csv",
-                    "text/csv"
-                )
+                # Zusammenfassung
+                with st.expander("📊 Zusammenfassung", expanded=True):
+                    total_stake = sum([float(bet['Einsatz'].replace('€', '')) for bet in analysis['bets']])
+                    avg_value = np.mean([float(bet['Value'].replace('%', '')) for bet in analysis['bets']])
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Gesamt-Einsatz", f"€{total_stake:.2f}")
+                    col2.metric("Durchschn. Value", f"{avg_value:.1f}%")
+                    col3.metric("ROI Erwartung", f"{avg_value * 0.8:.1f}%")
             else:
-                st.info("Keine Value Bets mit >5% Edge gefunden")
+                st.info("Keine Value Bets gefunden. Versuche andere Ligen oder warte auf bessere Quoten.")
     
     with tab_help:
-        st.header("❓ Hilfe")
+        st.header("❓ Hilfe & FAQ")
         
         with st.expander("🚀 Schnellstart"):
             st.markdown("""
-            1. **API-Key eingeben** (api-football.com)
-            2. **Ligen auswählen**
-            3. **Analyse starten**
-            4. **Value Bets prüfen**
+            1. **API-Key holen**: Registriere dich kostenlos auf [api-football.com](https://www.api-football.com/)
+            2. **Einstellungen**: Gib deinen API-Key ein und wähle Ligen
+            3. **Debug-Modus**: Aktiviere für detaillierte Fehlersuche
+            4. **Analyse starten**: Klicke auf "ANALYSE STARTEN"
+            5. **Ergebnisse**: Sieh dir die Value Bets an
             """)
         
-        with st.expander("📊 Dixon-Coles Modell"):
+        with st.expander("🔍 Debug-Modus"):
             st.markdown("""
-            Statistisches Modell zur Fußballvorhersage:
-            - Poisson-Verteilung für Tore
-            - Team-spezifische Stärken
-            - Heimvorteil
-            - Korrektur für niedrige Torzahlen
+            **Was zeigt der Debug-Modus?**
+            - API-Verbindungsstatus und Antworten
+            - Anzahl geladener Daten
+            - Modelltraining-Details
+            - Value-Berechnungen für jedes Spiel
+            - Vollständige Fehlermeldungen
+            
+            **Wann aktivieren?**
+            - Wenn die Analyse nicht funktioniert
+            - Bei API-Verbindungsproblemen
+            - Um zu verstehen, was im Hintergrund passiert
             """)
         
-        with st.expander("💰 Value Betting"):
+        with st.expander("⚠️ Häufige Probleme"):
             st.markdown("""
-            Value = Faire Quote höher als Marktquote
-            - Nur Wetten mit >5% Edge
-            - Kelly-Kriterium für Einsätze
-            - Langfristige Strategie (100+ Wetten)
+            **"Nicht genug Daten"**
+            - Liga hat < 30 historische Spiele
+            - Lösung: Andere Saison oder Liga wählen
+            
+            **"Keine kommenden Spiele"**
+            - Spielpause oder keine Fixtures in 7 Tagen
+            - Lösung: Andere Liga wählen
+            
+            **"API-Limit erreicht"**
+            - 100 Anfragen/Tag im kostenlosen Plan
+            - Lösung: Morgen wieder versuchen
+            
+            **"Modelltraining fehlgeschlagen"**
+            - Zu wenige Teams/Spiele
+            - Lösung: Liga mit mehr Teams wählen
             """)
+        
+        with st.expander("📈 Value Betting erklärt"):
+            st.markdown("""
+            **Was ist Value Betting?**
+            Eine Wette hat "Value", wenn die faire Wahrscheinlichkeit höher ist als die implizite Wahrscheinlichkeit der Quote.
+            
+            **Beispiel:**
+            - Quote: 2.50 (implizite Wahrscheinlichkeit: 40%)
+            - Faire Wahrscheinlichkeit laut Modell: 45%
+            - Value: 45% × 2.50 - 1 = 12.5%
+            
+            **Kelly Criterion:**
+            Berechnet den optimalen Einsatz basierend auf Value und Bankroll.
+            Wir nutzen 20% Kelly für konservativere Einsätze.
+            """)
+        
+        st.divider()
+        st.caption("⚠️ Glücksspiel kann süchtig machen. Spiele verantwortungsvoll!")
 
 if __name__ == "__main__":
     main()
