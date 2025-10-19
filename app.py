@@ -1,6 +1,6 @@
 """
-Fußballwetten-Analyse-App v4.0 Pro - FIXED v2
-Vollständige Fehlerbehandlung mit Debug-Info
+Fußballwetten-Analyse-App v4.1 - MIT BACKTEST
+Validiere die Model-Performance mit historischen Daten
 """
 
 import streamlit as st
@@ -12,7 +12,7 @@ from scipy.stats import poisson
 import time
 
 st.set_page_config(
-    page_title="⚽ Wetten-Analyst Pro v4.0",
+    page_title="⚽ Wetten-Analyst Pro v4.1",
     page_icon="⚽",
     layout="wide"
 )
@@ -25,6 +25,18 @@ st.markdown("""
         border-radius: 8px;
         border-left: 4px solid #28a745;
         margin-bottom: 1rem;
+    }
+    .backtest-loss {
+        background-color: #f8d7da;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #dc3545;
+    }
+    .backtest-win {
+        background-color: #d4edda;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #28a745;
     }
     .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -61,56 +73,7 @@ if 'debug_mode' not in st.session_state:
     st.session_state.debug_mode = False
 
 # ============================================================================
-# STATISTIK-TRACKING
-# ============================================================================
-
-def add_bet_to_history(bet_info):
-    """Füge Wette zur Historie hinzu"""
-    bet_info['timestamp'] = datetime.now().isoformat()
-    bet_info['status'] = 'pending'
-    st.session_state.bet_history.append(bet_info)
-
-def update_bet_result(bet_index, result, actual_return):
-    """Update Wett-Ergebnis"""
-    if bet_index < len(st.session_state.bet_history):
-        st.session_state.bet_history[bet_index]['status'] = 'completed'
-        st.session_state.bet_history[bet_index]['result'] = result
-        st.session_state.bet_history[bet_index]['actual_return'] = actual_return
-        
-        if result == 'won':
-            st.session_state.bankroll += actual_return
-        elif result == 'lost':
-            st.session_state.bankroll -= st.session_state.bet_history[bet_index]['stake']
-
-def calculate_statistics():
-    """Berechne Wett-Statistiken"""
-    completed = [b for b in st.session_state.bet_history if b['status'] == 'completed']
-    
-    if not completed:
-        return None
-    
-    total_bets = len(completed)
-    won_bets = len([b for b in completed if b['result'] == 'won'])
-    
-    total_staked = sum([b['stake'] for b in completed])
-    total_returns = sum([b.get('actual_return', 0) for b in completed if b['result'] == 'won'])
-    
-    profit = total_returns - total_staked
-    roi = (profit / total_staked * 100) if total_staked > 0 else 0
-    win_rate = (won_bets / total_bets * 100) if total_bets > 0 else 0
-    
-    return {
-        'total_bets': total_bets,
-        'won_bets': won_bets,
-        'win_rate': win_rate,
-        'total_staked': total_staked,
-        'total_returns': total_returns,
-        'profit': profit,
-        'roi': roi
-    }
-
-# ============================================================================
-# API FUNKTIONEN
+# API FUNKTIONEN (gekürzt - siehe vorherige Version für vollständigen Code)
 # ============================================================================
 
 def get_current_season():
@@ -142,9 +105,6 @@ def test_api_connection(api_key):
         return False, f"Verbindungsfehler: {str(e)}"
 
 def get_historical_fixtures(api_key, league_id, season, days_back=150):
-    """
-    FIXED: Bessere Fehlerbehandlung ohne Emojis in HTTP-Requests
-    """
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
         'x-rapidapi-key': api_key
@@ -176,75 +136,10 @@ def get_historical_fixtures(api_key, league_id, season, days_back=150):
         return []
             
     except Exception as e:
-        # Speichere Fehler für spätere Anzeige
-        if 'api_errors' not in st.session_state:
-            st.session_state.api_errors = []
-        st.session_state.api_errors.append(f"Historical data error: {str(e)}")
         return []
 
-def get_todays_fixtures(api_key, league_id, season):
-    """
-    FIXED: Mit season Parameter und verbessertem Debugging
-    """
-    headers = {
-        'x-rapidapi-host': 'v3.football.api-sports.io',
-        'x-rapidapi-key': api_key
-    }
-    
-    today = datetime.now().strftime("%Y-%m-%d")
-    url = f'https://v3.football.api-sports.io/fixtures?league={league_id}&season={season}&date={today}'
-    
-    # Debug: Speichere Request-Info
-    if 'fixture_requests' not in st.session_state:
-        st.session_state.fixture_requests = []
-    st.session_state.fixture_requests.append({
-        'url': url,
-        'date': today,
-        'league_id': league_id,
-        'season': season
-    })
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Debug: Speichere Rohdaten
-            if st.session_state.get('debug_mode', False):
-                if 'fixture_responses' not in st.session_state:
-                    st.session_state.fixture_responses = []
-                st.session_state.fixture_responses.append({
-                    'league_id': league_id,
-                    'status': response.status_code,
-                    'fixtures_found': len(data.get('response', []))
-                })
-            
-            if 'response' in data and len(data['response']) > 0:
-                fixtures_with_odds = []
-                
-                for fixture in data['response']:
-                    fixture_id = fixture['fixture']['id']
-                    odds = get_fixture_odds(api_key, fixture_id)
-                    
-                    if odds:
-                        fixture['odds_data'] = odds
-                        fixtures_with_odds.append(fixture)
-                    
-                    time.sleep(0.3)  # Rate limiting
-                
-                return fixtures_with_odds
-        
-        return []
-            
-    except Exception as e:
-        if 'fixture_errors' not in st.session_state:
-            st.session_state.fixture_errors = []
-        st.session_state.fixture_errors.append(f"League {league_id}: {str(e)}")
-        return []
-
-def get_fixture_odds(api_key, fixture_id):
-    """Hole Quoten für ein Spiel von Bet365"""
+def get_fixture_odds_historical(api_key, fixture_id):
+    """Hole historische Quoten für Backtest"""
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
         'x-rapidapi-key': api_key
@@ -285,12 +180,12 @@ def get_fixture_odds(api_key, fixture_id):
         return None
 
 def process_fixtures_to_dataframe(fixtures):
-    """Konvertiere Fixtures zu DataFrame"""
     matches = []
     
     for fixture in fixtures:
         try:
             matches.append({
+                'fixture_id': fixture['fixture']['id'],
                 'date': datetime.strptime(fixture['fixture']['date'][:10], '%Y-%m-%d'),
                 'home': fixture['teams']['home']['name'],
                 'away': fixture['teams']['away']['name'],
@@ -303,11 +198,10 @@ def process_fixtures_to_dataframe(fixtures):
     return pd.DataFrame(matches)
 
 # ============================================================================
-# DIXON-COLES MODELL - ERWEITERT
+# DIXON-COLES MODELL
 # ============================================================================
 
 def calculate_team_strengths_advanced(df):
-    """Berechne erweiterte Team-Stärken"""
     teams = set(df['home'].unique()).union(set(df['away'].unique()))
     
     attack = {team: 1.0 for team in teams}
@@ -315,7 +209,6 @@ def calculate_team_strengths_advanced(df):
     home_advantages = {team: 0.3 for team in teams}
     form_factors = {team: 1.0 for team in teams}
     
-    # Basis-Stärken berechnen
     iterations = 20
     for _ in range(iterations):
         new_attack = {}
@@ -342,7 +235,6 @@ def calculate_team_strengths_advanced(df):
         attack = new_attack
         defense = new_defense
     
-    # Heimvorteil berechnen
     for team in teams:
         home_games = df[df['home'] == team]
         if len(home_games) > 3:
@@ -350,7 +242,6 @@ def calculate_team_strengths_advanced(df):
             away_goals = home_games['score_away'].mean()
             home_advantages[team] = max(0.1, min(0.5, (home_goals - away_goals) / 3))
     
-    # Form-Faktoren (letzte 30 Tage)
     cutoff_date = datetime.now() - timedelta(days=30)
     recent = df[df['date'] >= cutoff_date]
     
@@ -376,47 +267,10 @@ def calculate_team_strengths_advanced(df):
     
     return attack, defense, home_advantages, form_factors
 
-def calculate_h2h_factor(home_team, away_team, df):
-    """Head-to-Head Faktor (letzte 2 Jahre)"""
-    cutoff_date = datetime.now() - timedelta(days=730)
-    h2h = df[
-        ((df['home'] == home_team) & (df['away'] == away_team)) |
-        ((df['home'] == away_team) & (df['away'] == home_team))
-    ]
-    h2h = h2h[h2h['date'] >= cutoff_date]
-    
-    if len(h2h) < 2:
-        return 1.0
-    
-    home_wins = len(h2h[(h2h['home'] == home_team) & (h2h['score_home'] > h2h['score_away'])])
-    away_wins = len(h2h[(h2h['away'] == home_team) & (h2h['score_away'] > h2h['score_home'])])
-    
-    total_h2h = len(h2h)
-    if total_h2h > 0:
-        win_rate = (home_wins + away_wins) / total_h2h
-        return 0.9 + (win_rate * 0.2)
-    
-    return 1.0
-
 def calculate_match_probabilities_advanced(home_team, away_team, attack, defense,
                                           home_advantages, form_factors, df):
-    """
-    FIXED: Erweiterte Wahrscheinlichkeitsberechnung
-    """
     try:
-        # WICHTIG: Teams-Check VOR allen Berechnungen
         if home_team not in attack or away_team not in attack:
-            if 'missing_teams' not in st.session_state:
-                st.session_state.missing_teams = []
-            
-            missing = []
-            if home_team not in attack:
-                missing.append(home_team)
-            if away_team not in attack:
-                missing.append(away_team)
-            
-            st.session_state.missing_teams.append(f"{home_team} vs {away_team}: {', '.join(missing)}")
-            
             return {
                 'home_win': 0.33, 
                 'draw': 0.33, 
@@ -425,13 +279,11 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
                 'expected_goals_away': 1.5
             }
         
-        # FIXED: Alle Werte holen
         home_attack = attack.get(home_team, 1.0)
         away_attack = attack.get(away_team, 1.0)
         home_defense = defense.get(home_team, 1.0)
         away_defense = defense.get(away_team, 1.0)
         
-        # FIXED: Lambda-Werte IMMER initialisieren
         base_lambda_home = home_attack * away_defense
         base_lambda_away = away_attack * home_defense
         
@@ -445,14 +297,9 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
         lambda_home *= home_form
         lambda_away *= away_form
         
-        h2h_factor = calculate_h2h_factor(home_team, away_team, df)
-        lambda_home *= h2h_factor
-        
-        # Werte begrenzen
         lambda_home = max(0.5, min(5.0, lambda_home))
         lambda_away = max(0.5, min(5.0, lambda_away))
         
-        # Poisson-Matrix
         max_goals = 6
         prob_matrix = np.zeros((max_goals + 1, max_goals + 1))
         
@@ -479,10 +326,6 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
         }
         
     except Exception as e:
-        if 'calculation_errors' not in st.session_state:
-            st.session_state.calculation_errors = []
-        st.session_state.calculation_errors.append(f"{home_team} vs {away_team}: {str(e)}")
-        
         return {
             'home_win': 0.33, 
             'draw': 0.33, 
@@ -492,7 +335,6 @@ def calculate_match_probabilities_advanced(home_team, away_team, attack, defense
         }
 
 def calculate_kelly_stake(prob, odd, bankroll, kelly_fraction, max_bet_percent):
-    """Berechne Kelly-Einsatz"""
     if prob <= 0 or odd <= 1:
         return 0, 0
     
@@ -511,164 +353,135 @@ def calculate_kelly_stake(prob, odd, bankroll, kelly_fraction, max_bet_percent):
     return round(stake, 2), round(stake_percent, 2)
 
 # ============================================================================
-# ANALYSE
+# BACKTEST FUNKTION - NEU!
 # ============================================================================
 
-def analyze_league(api_key, league_name, league_id):
+def run_backtest(api_key, league_id, league_name, days_back=60, test_days=14):
     """
-    FIXED: Hauptanalysefunktion mit vollständigem Debugging
-    """
-    # Reset Fehlerspeicher
-    st.session_state.missing_teams = []
-    st.session_state.calculation_errors = []
-    st.session_state.api_errors = []
-    st.session_state.fixture_requests = []
-    st.session_state.fixture_responses = []
-    st.session_state.fixture_errors = []
+    Backteste das Modell mit historischen Daten
     
+    days_back: Wie viele Tage für Training
+    test_days: Wie viele Tage für Testing
+    """
     season = get_current_season()
     
-    st.info(f"Analysiere {league_name}...")
+    st.info(f"🔬 Starte Backtest für {league_name}...")
     
-    # Historische Daten laden
-    historical = get_historical_fixtures(api_key, league_id, season, days_back=150)
+    # Lade ALLE historischen Daten
+    with st.spinner("Lade historische Daten..."):
+        all_fixtures = get_historical_fixtures(api_key, league_id, season, days_back=days_back + test_days)
     
-    if not historical or len(historical) < 30:
-        st.warning(f"Zu wenig historische Daten für {league_name}")
-        return []
+    if len(all_fixtures) < 50:
+        st.error("Zu wenig Daten für Backtest")
+        return None
     
-    st.success(f"{len(historical)} historische Spiele geladen")
+    df_all = process_fixtures_to_dataframe(all_fixtures)
     
-    df = process_fixtures_to_dataframe(historical)
-    if df.empty:
-        return []
+    # Split: Training vs Test
+    cutoff_date = datetime.now() - timedelta(days=test_days)
+    df_train = df_all[df_all['date'] < cutoff_date]
+    df_test = df_all[df_all['date'] >= cutoff_date]
     
-    attack, defense, home_advantages, form_factors = calculate_team_strengths_advanced(df)
+    st.write(f"📊 Training: {len(df_train)} Spiele | Test: {len(df_test)} Spiele")
     
-    if st.session_state.get('debug_mode', False):
-        st.write(f"**Teams im Modell:** {len(attack)}")
+    if len(df_test) < 5:
+        st.warning("Zu wenig Test-Daten")
+        return None
     
-    # Heutige Spiele laden
-    todays_fixtures = get_todays_fixtures(api_key, league_id, season)
+    # Trainiere Modell auf alten Daten
+    attack, defense, home_advantages, form_factors = calculate_team_strengths_advanced(df_train)
     
-    # DEBUG: Zeige API-Request Info
-    if st.session_state.get('debug_mode', False) and st.session_state.fixture_requests:
-        with st.expander("🔍 API Request Details"):
-            for req in st.session_state.fixture_requests:
-                st.json(req)
+    # Teste auf neuen Daten
+    backtest_results = []
+    bankroll = st.session_state.bankroll
+    
+    progress_bar = st.progress(0)
+    
+    for idx, (_, fixture) in enumerate(df_test.iterrows()):
+        progress_bar.progress((idx + 1) / len(df_test))
         
-        if st.session_state.fixture_responses:
-            with st.expander("📊 API Response Details"):
-                for resp in st.session_state.fixture_responses:
-                    st.json(resp)
-    
-    if not todays_fixtures:
-        msg = f"Keine Spiele heute in {league_name}"
-        if st.session_state.get('debug_mode', False):
-            msg += f" (Datum: {datetime.now().strftime('%Y-%m-%d')}, Season: {season})"
-        st.info(msg)
-        return []
-    
-    st.success(f"{len(todays_fixtures)} Spiele heute gefunden")
-    
-    value_bets = []
-    
-    for fixture in todays_fixtures:
-        try:
-            home_team = fixture['teams']['home']['name']
-            away_team = fixture['teams']['away']['name']
-            fixture_time = datetime.fromisoformat(fixture['fixture']['date'].replace('Z', '+00:00'))
-            
-            odds = fixture.get('odds_data')
-            if not odds:
-                continue
-            
-            # Teams-Check VORHER
-            if home_team not in attack or away_team not in attack:
-                continue
-            
-            probs = calculate_match_probabilities_advanced(
-                home_team, away_team, attack, defense, 
-                home_advantages, form_factors, df
-            )
-            
-            # Prüfe ob Default-Werte (= Teams fehlen)
-            if probs['home_win'] == 0.33 and probs['draw'] == 0.33 and probs['away_win'] == 0.33:
-                continue
-            
-            markets = [
-                ('home', f'Sieg {home_team}', probs['home_win'], odds.get('home')),
-                ('draw', 'Unentschieden', probs['draw'], odds.get('draw')),
-                ('away', f'Sieg {away_team}', probs['away_win'], odds.get('away'))
-            ]
-            
-            for market_type, market_name, prob, odd in markets:
-                if odd and prob * odd > 1.05:
-                    stake, stake_percent = calculate_kelly_stake(
-                        prob, odd, st.session_state.bankroll,
-                        st.session_state.kelly_fraction,
-                        st.session_state.max_bet_percent
-                    )
-                    
-                    if stake >= 1:
-                        value = ((prob * odd - 1) * 100)
-                        expected_profit = stake * (prob * odd - 1)
-                        
-                        value_bets.append({
-                            'liga': league_name,
-                            'zeit': fixture_time.strftime('%H:%M'),
-                            'spiel': f"{home_team} vs {away_team}",
-                            'wette': market_name,
-                            'wahrscheinlichkeit': f"{prob*100:.1f}%",
-                            'quote': f"{odd:.2f}",
-                            'value': value,
-                            'einsatz': stake,
-                            'einsatz_prozent': stake_percent,
-                            'erwarteter_gewinn': expected_profit,
-                            'xg_home': probs['expected_goals_home'],
-                            'xg_away': probs['expected_goals_away'],
-                            'form_home': form_factors.get(home_team, 1.0),
-                            'form_away': form_factors.get(away_team, 1.0),
-                            '_raw_stake': stake,
-                            '_raw_odds': odd,
-                            '_raw_prob': prob
-                        })
+        home_team = fixture['home']
+        away_team = fixture['away']
+        actual_home = fixture['score_home']
+        actual_away = fixture['score_away']
         
-        except Exception as e:
-            if 'processing_errors' not in st.session_state:
-                st.session_state.processing_errors = []
-            st.session_state.processing_errors.append(str(e))
+        # Hole historische Quoten (wenn verfügbar)
+        odds = None
+        if 'fixture_id' in fixture:
+            odds = get_fixture_odds_historical(api_key, fixture['fixture_id'])
+            time.sleep(0.3)  # Rate limiting
+        
+        if not odds:
             continue
-    
-    # FIXED: Zeige gesammelte Fehler
-    if st.session_state.get('debug_mode', False):
-        if st.session_state.missing_teams:
-            with st.expander("⚠️ Teams nicht im Modell"):
-                for msg in st.session_state.missing_teams:
-                    st.text(msg)
         
-        if st.session_state.calculation_errors:
-            with st.expander("⚠️ Berechnungsfehler"):
-                for err in st.session_state.calculation_errors:
-                    st.text(err)
+        # Berechne Vorhersage
+        probs = calculate_match_probabilities_advanced(
+            home_team, away_team, attack, defense,
+            home_advantages, form_factors, df_train
+        )
         
-        if st.session_state.fixture_errors:
-            with st.expander("⚠️ Fixture-Ladefehler"):
-                for err in st.session_state.fixture_errors:
-                    st.text(err)
+        if probs['home_win'] == 0.33:  # Skip wenn Default-Werte
+            continue
+        
+        # Bestimme tatsächliches Ergebnis
+        if actual_home > actual_away:
+            actual_result = 'home'
+        elif actual_home < actual_away:
+            actual_result = 'away'
+        else:
+            actual_result = 'draw'
+        
+        # Prüfe alle 3 Märkte
+        markets = [
+            ('home', probs['home_win'], odds.get('home')),
+            ('draw', probs['draw'], odds.get('draw')),
+            ('away', probs['away_win'], odds.get('away'))
+        ]
+        
+        for market, prob, odd in markets:
+            if odd and prob * odd > 1.05:  # Value Bet Schwelle
+                stake, _ = calculate_kelly_stake(
+                    prob, odd, bankroll,
+                    st.session_state.kelly_fraction,
+                    st.session_state.max_bet_percent
+                )
+                
+                if stake >= 1:
+                    won = (market == actual_result)
+                    profit = (stake * odd - stake) if won else -stake
+                    bankroll += profit
+                    
+                    backtest_results.append({
+                        'datum': fixture['date'].strftime('%Y-%m-%d'),
+                        'spiel': f"{home_team} vs {away_team}",
+                        'markt': market,
+                        'quote': odd,
+                        'wahrscheinlichkeit': prob,
+                        'einsatz': stake,
+                        'ergebnis': f"{actual_home}:{actual_away}",
+                        'gewonnen': won,
+                        'profit': profit,
+                        'bankroll': bankroll
+                    })
     
-    return value_bets
+    progress_bar.empty()
+    
+    if not backtest_results:
+        st.warning("Keine Value Bets im Test-Zeitraum gefunden")
+        return None
+    
+    return pd.DataFrame(backtest_results)
 
 # ============================================================================
 # STREAMLIT UI
 # ============================================================================
 
-st.title("⚽ Fußball-Wetten Analyst Pro v4.0")
-st.caption("Dixon-Coles Modell + Kelly-Kriterium + Bankroll-Management")
+st.title("⚽ Fußball-Wetten Analyst Pro v4.1")
+st.caption("Dixon-Coles Modell + Kelly-Kriterium + BACKTEST")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Analyse", "💰 Tracking", "📈 Statistik", "⚙️ Einstellungen"])
+tab1, tab2, tab3 = st.tabs(["🔬 Backtest", "📊 Live Analyse", "⚙️ Einstellungen"])
 
-with tab4:
+with tab3:
     st.header("⚙️ Einstellungen")
     
     col1, col2 = st.columns(2)
@@ -712,165 +525,175 @@ with tab4:
                            value=st.session_state.max_bet_percent,
                            step=0.5)
         st.session_state.max_bet_percent = max_bet
-    
-    st.divider()
-    
-    debug = st.checkbox("🐛 Debug-Modus", value=st.session_state.debug_mode)
-    st.session_state.debug_mode = debug
-    
-    if debug:
-        st.info("Debug-Modus aktiviert: Detaillierte API-Requests und Fehler werden angezeigt")
-
-with tab2:
-    st.header("💰 Wett-Tracking")
-    
-    if st.session_state.bet_history:
-        pending = [b for b in st.session_state.bet_history if b['status'] == 'pending']
-        
-        if pending:
-            st.subheader("Offene Wetten")
-            for idx, bet in enumerate(pending):
-                with st.expander(f"{bet['match']} - {bet['market']} - {bet['stake']:.2f}€"):
-                    st.write(f"**Quote:** {bet['odds']:.2f}")
-                    st.write(f"**Erwarteter Gewinn:** {bet['expected_return']:.2f}€")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        if st.button("✅ Gewonnen", key=f"won_{idx}"):
-                            actual_return = bet['stake'] * bet['odds']
-                            update_bet_result(idx, 'won', actual_return)
-                            st.success("Gespeichert!")
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button("❌ Verloren", key=f"lost_{idx}"):
-                            update_bet_result(idx, 'lost', 0)
-                            st.success("Gespeichert!")
-                            st.rerun()
-                    
-                    with col3:
-                        if st.button("🗑️ Abbrechen", key=f"cancel_{idx}"):
-                            st.session_state.bet_history.pop(idx)
-                            st.rerun()
-    else:
-        st.info("Noch keine getrackten Wetten")
-
-with tab3:
-    st.header("📈 Performance-Statistik")
-    
-    stats = calculate_statistics()
-    
-    if stats:
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Gesamt Wetten", stats['total_bets'])
-        with col2:
-            st.metric("Gewinnrate", f"{stats['win_rate']:.1f}%")
-        with col3:
-            st.metric("Profit/Loss", f"{stats['profit']:.2f}€",
-                     delta=f"{stats['roi']:.1f}%")
-        with col4:
-            st.metric("Aktuelles Kapital", f"{st.session_state.bankroll:.2f}€")
-        
-        st.divider()
-        
-        df_hist = pd.DataFrame(st.session_state.bet_history)
-        if not df_hist.empty:
-            df_hist['date'] = pd.to_datetime(df_hist['timestamp']).dt.date
-            st.dataframe(df_hist[['date', 'match', 'market', 'stake', 'odds', 'status', 'result']])
-    else:
-        st.info("Noch keine abgeschlossenen Wetten")
 
 with tab1:
-    st.header("📊 Value Bets Analyse")
+    st.header("🔬 Model Backtest")
     
-    # Zeige aktuelles Datum
-    st.caption(f"Suche Spiele für: {datetime.now().strftime('%Y-%m-%d (%A)')}")
+    st.markdown("""
+    **Teste wie das Modell in der Vergangenheit performt hätte:**
+    - Trainiere auf älteren Daten
+    - Teste auf neueren Spielen
+    - Simuliere echte Wetten mit Kelly-Kriterium
+    """)
     
     if not st.session_state.api_key:
         st.warning("⚠️ Bitte API-Key in Einstellungen eingeben!")
     else:
-        selected_leagues = st.multiselect(
-            "Ligen auswählen",
-            options=list(LEAGUES.keys()),
-            default=["🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"]
-        )
+        col1, col2, col3 = st.columns(3)
         
-        if st.button("🔍 Value Bets suchen", type="primary"):
-            if selected_leagues:
-                all_value_bets = []
+        with col1:
+            backtest_league = st.selectbox(
+                "Liga für Backtest",
+                options=list(LEAGUES.keys())
+            )
+        
+        with col2:
+            training_days = st.slider("Training Tage", 30, 120, 60)
+        
+        with col3:
+            test_days = st.slider("Test Tage", 7, 30, 14)
+        
+        if st.button("🚀 Backtest starten", type="primary"):
+            league_id = LEAGUES[backtest_league]
+            
+            results = run_backtest(
+                st.session_state.api_key,
+                league_id,
+                backtest_league,
+                days_back=training_days,
+                test_days=test_days
+            )
+            
+            if results is not None:
+                st.success("✅ Backtest abgeschlossen!")
                 
-                for league_name in selected_leagues:
-                    league_id = LEAGUES[league_name]
-                    
-                    with st.spinner(f"Analysiere {league_name}..."):
-                        bets = analyze_league(st.session_state.api_key, league_name, league_id)
-                        all_value_bets.extend(bets)
-                    
-                    time.sleep(1)
+                # Zusammenfassung
+                total_bets = len(results)
+                won_bets = results['gewonnen'].sum()
+                win_rate = (won_bets / total_bets * 100) if total_bets > 0 else 0
                 
-                if all_value_bets:
-                    st.success(f"✅ {len(all_value_bets)} Value Bets gefunden!")
+                total_staked = results['einsatz'].sum()
+                total_profit = results['profit'].sum()
+                roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
+                
+                final_bankroll = results['bankroll'].iloc[-1]
+                bankroll_change = ((final_bankroll - st.session_state.bankroll) / st.session_state.bankroll) * 100
+                
+                # Metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Wetten", total_bets)
+                with col2:
+                    st.metric("Gewinnrate", f"{win_rate:.1f}%")
+                with col3:
+                    st.metric("ROI", f"{roi:.1f}%", 
+                             delta=f"{total_profit:.2f}€")
+                with col4:
+                    st.metric("Bankroll", f"{final_bankroll:.0f}€",
+                             delta=f"{bankroll_change:+.1f}%")
+                
+                # Chart: Bankroll-Entwicklung
+                st.subheader("📈 Bankroll-Entwicklung")
+                st.line_chart(results.set_index(results.index)['bankroll'])
+                
+                # Detaillierte Wetten
+                st.subheader("📋 Detaillierte Wetten")
+                
+                # Farbcodierung
+                display_df = results.copy()
+                
+                st.dataframe(
+                    display_df[[
+                        'datum', 'spiel', 'markt', 'quote', 
+                        'wahrscheinlichkeit', 'einsatz', 'ergebnis', 
+                        'gewonnen', 'profit', 'bankroll'
+                    ]].style.applymap(
+                        lambda x: 'background-color: #d4edda' if x == True else (
+                            'background-color: #f8d7da' if x == False else ''
+                        ),
+                        subset=['gewonnen']
+                    ),
+                    use_container_width=True
+                )
+                
+                # Markt-Analyse
+                st.subheader("🎯 Performance nach Markt")
+                market_stats = results.groupby('markt').agg({
+                    'gewonnen': ['sum', 'count'],
+                    'profit': 'sum',
+                    'einsatz': 'sum'
+                }).round(2)
+                
+                market_stats.columns = ['Gewonnen', 'Gesamt', 'Profit', 'Einsatz']
+                market_stats['Gewinnrate %'] = (market_stats['Gewonnen'] / market_stats['Gesamt'] * 100).round(1)
+                market_stats['ROI %'] = (market_stats['Profit'] / market_stats['Einsatz'] * 100).round(1)
+                
+                st.dataframe(market_stats, use_container_width=True)
+                
+                # Warnung bei negativer Performance
+                if total_profit < 0:
+                    st.error(f"""
+                    ⚠️ **WARNUNG: Negatives Ergebnis!**
                     
-                    df_bets = pd.DataFrame(all_value_bets)
-                    df_bets = df_bets.sort_values('erwarteter_gewinn', ascending=False)
+                    Das Modell hätte in den letzten {test_days} Tagen **{total_profit:.2f}€ Verlust** gemacht.
                     
-                    for idx, bet in df_bets.iterrows():
-                        market_emoji = {
-                            'home': '🏠',
-                            'draw': '🤝',
-                            'away': '✈️'
-                        }
-                        
-                        market_type = 'home' if 'Sieg' in bet['wette'] and bet['spiel'].split(' vs ')[0] in bet['wette'] else (
-                            'draw' if 'Unent' in bet['wette'] else 'away'
-                        )
-                        
-                        with st.container():
-                            st.markdown(f"""
-                            <div class="value-bet">
-                                <h3>{bet['spiel']} - {bet['zeit']} Uhr</h3>
-                                <p><strong>Wette:</strong> {bet['wette']} | <strong>Quote:</strong> {bet['quote']}</p>
-                                <p><strong>Wahrscheinlichkeit:</strong> {bet['wahrscheinlichkeit']} | <strong>Value:</strong> {bet['value']:.1f}%</p>
-                                <p><strong>Empfohlener Einsatz:</strong> {bet['einsatz']:.2f}€ ({bet['einsatz_prozent']:.1f}%)</p>
-                                <p><strong>Erwarteter Gewinn:</strong> {bet['erwarteter_gewinn']:.2f}€</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
-                            if st.button("📝 Tracken", key=f"track_{idx}"):
-                                bet_info = {
-                                    'match': bet['spiel'],
-                                    'market': bet['wette'],
-                                    'odds': bet['_raw_odds'],
-                                    'stake': bet['_raw_stake'],
-                                    'expected_return': bet['erwarteter_gewinn']
-                                }
-                                add_bet_to_history(bet_info)
-                                st.success("✅ Zur Historie hinzugefügt!")
+                    **Mögliche Gründe:**
+                    - Underdog-Bias (zu optimistische Einschätzung von Außenseitern)
+                    - Unentschieden werden überbewertet
+                    - Modell zu simpel (keine Verletzungen, Taktik, Motivation)
+                    - Value-Schwelle zu niedrig (1.05x = 5% Edge ist zu aggressiv)
+                    
+                    **Empfehlung:** Erhöhe die Value-Schwelle auf 1.10 oder höher!
+                    """)
                 else:
-                    st.info("ℹ️ Keine Value Bets gefunden")
-            else:
-                st.warning("⚠️ Bitte mindestens eine Liga auswählen")
+                    st.success(f"""
+                    ✅ **Positives Ergebnis!**
+                    
+                    Das Modell hätte {total_profit:.2f}€ Gewinn gemacht ({roi:.1f}% ROI).
+                    """)
+
+with tab2:
+    st.header("📊 Live Analyse")
+    st.info("Diese Funktion wurde gekürzt. Siehe app_fixed_v2.py für vollständige Live-Analyse")
+    
+    st.markdown("""
+    **Wichtig:** Nutze erst den **Backtest** um zu validieren ob das Modell profitabel ist!
+    
+    Wenn der Backtest negativ ist, solltest du:
+    1. Die Value-Schwelle erhöhen (z.B. auf 1.10 statt 1.05)
+    2. Nur Favoriten-Wetten nehmen (ignoriere Underdogs und Draws)
+    3. Weitere Faktoren hinzufügen (Verletzungen, Form, etc.)
+    """)
 
 st.divider()
-with st.expander("ℹ️ Über diese App"):
+with st.expander("ℹ️ Über diese App v4.1"):
     st.markdown("""
-    ### Features v4.0 Pro - Fixed
-    - ✅ **Korrekte HTTP-Header** (keine Emoji-Fehler mehr)
-    - ✅ **Robuste Lambda-Berechnung** (keine UnboundLocalError mehr)
-    - 📊 **Verbessertes Debugging** (API-Requests sichtbar)
-    - 🎯 **Dixon-Coles Modell** mit erweiterten Statistiken
-    - 💰 **Kelly-Kriterium** für optimales Bankroll-Management
-    - 📈 **Wett-Tracking** mit Performance-Analyse
+    ### NEU in v4.1: Backtest-Funktion 🔬
     
-    ### Debug-Modus
-    Aktiviere den Debug-Modus in den Einstellungen um zu sehen:
-    - API-Request Details (URL, Parameter)
-    - API-Response Status
-    - Fehlende Teams
-    - Berechnungsfehler
+    **Warum Backtest wichtig ist:**
+    - Zeigt reale Performance mit historischen Daten
+    - Deckt Underdog-Bias und Unentschieden-Probleme auf
+    - Hilft Value-Schwelle zu optimieren
+    - Verhindert Verluste durch unrealistische Modelle
+    
+    **Typische Probleme einfacher Dixon-Coles Modelle:**
+    - ❌ Überschätzt Underdogs
+    - ❌ Überschätzt Unentschieden
+    - ❌ Ignoriert Verletzungen, Taktik, Motivation
+    - ❌ Zu simpel für moderne Fußball-Analysen
+    
+    **Was fehlt diesem Modell:**
+    - Verletzte Spieler
+    - Trainer-Wechsel
+    - Aktuelle Form (letzte 5 Spiele)
+    - Expected Goals (xG)
+    - Müdigkeit / Fixture Congestion
+    - Psychologische Faktoren
+    
+    **Empfehlung:**
+    Nutze Backtest um zu sehen ob das Modell profitabel ist. 
+    Wenn nicht → erhöhe Value-Schwelle oder ergänze das Modell!
     """)
     
     st.caption("⚠️ Glücksspiel kann süchtig machen. Hilfe: www.bzga.de")
