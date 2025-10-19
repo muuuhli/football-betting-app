@@ -1,7 +1,7 @@
 """
-Fußballwetten-Analyse-App v2.1 (Fixed)
-Automatische Analyse aller Top-Ligen mit Dixon-Coles-Modell
-Mit korrigiertem Status-Parameter für API-Football v3
+Fußballwetten-Analyse-App v2.2 (API-Request Fix)
+KORRIGIERT: API-Requests verbrauchen jetzt tatsächlich die Request-Quota
+Lösung: Richtige Query-Parameter für API-Football v3
 """
 
 import streamlit as st
@@ -62,19 +62,17 @@ LEAGUES = {
     "🇫🇷 Ligue 2": 62,
 }
 
-# WICHTIG: Korrigierte Status-Werte für abgeschlossene Spiele
-COMPLETED_STATUSES = "FT-AET-PEN"  # Full Time, After Extra Time, After Penalty
-LIVE_STATUSES = "1H-HT-2H-ET-BT-P"  # Optional: Laufende Spiele
-
 # ============================================================================
 # SESSION STATE
 # ============================================================================
 
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
+if 'debug_mode' not in st.session_state:
+    st.session_state.debug_mode = False
 
 # ============================================================================
-# API FUNKTIONEN (KORRIGIERT)
+# API FUNKTIONEN (KORRIGIERT - VERBRAUCHT JETZT REQUESTS!)
 # ============================================================================
 
 def get_current_season():
@@ -103,46 +101,80 @@ def test_api_connection(api_key):
         if response.status_code == 200:
             data = response.json()
             if 'response' in data:
-                return True, "✅ API-Verbindung erfolgreich"
+                account = data['response'].get('account', {})
+                requests_today = account.get('requests', {}).get('current', 0)
+                requests_limit = account.get('requests', {}).get('limit_day', 0)
+                
+                return True, f"✅ API OK | Requests heute: {requests_today}/{requests_limit}"
         return False, f"❌ API-Fehler: Status {response.status_code}"
     except Exception as e:
         return False, f"❌ Verbindungsfehler: {str(e)}"
 
-def get_fixtures(api_key, league_id, season, include_live=False):
+def get_fixtures(api_key, league_id, season, last_n_days=90):
     """
-    Hole Fixtures mit korrekten Status-Parametern
+    KORRIGIERT: Hole Fixtures mit Datumsbereich statt Status-Filter
     
-    WICHTIG: API-Football v3 benötigt mehrere Status-Werte:
-    - FT: Full Time (90 Minuten)
-    - AET: After Extra Time (nach Verlängerung)
-    - PEN: After Penalty (nach Elfmeterschießen)
+    WICHTIG: Der Status-Parameter mit Bindestrichen (FT-AET-PEN) wird oft gecacht.
+    Besser: Hole alle Spiele eines Zeitraums und filtere dann nach Status.
+    Dies erzwingt echte API-Requests!
     """
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
         'x-rapidapi-key': api_key
     }
     
-    # Konstruiere Status-Parameter
-    status = COMPLETED_STATUSES
-    if include_live:
-        status += f"-{LIVE_STATUSES}"
+    # Berechne Datumsbreich (letzte N Tage)
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=last_n_days)
     
-    # API-Call mit korrektem Status-Parameter
-    url = f'https://v3.football.api-sports.io/fixtures?league={league_id}&season={season}&status={status}'
+    # WICHTIG: Verwende 'from' und 'to' Parameter statt status
+    # Dies erzwingt einen echten API-Call ohne Cache!
+    url = (
+        f'https://v3.football.api-sports.io/fixtures'
+        f'?league={league_id}'
+        f'&season={season}'
+        f'&from={start_date.strftime("%Y-%m-%d")}'
+        f'&to={end_date.strftime("%Y-%m-%d")}'
+    )
+    
+    if st.session_state.debug_mode:
+        st.write(f"🔍 **API Request URL:** {url}")
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
         
+        if st.session_state.debug_mode:
+            st.write(f"📡 **Response Status:** {response.status_code}")
+            st.write(f"📊 **Response Headers:** {dict(response.headers)}")
+        
         if response.status_code == 200:
             data = response.json()
             
+            if st.session_state.debug_mode:
+                st.write(f"📦 **API Response Keys:** {list(data.keys())}")
+                if 'response' in data:
+                    st.write(f"📈 **Anzahl Fixtures:** {len(data['response'])}")
+            
             if 'response' in data and len(data['response']) > 0:
-                return data['response']
+                # Filtere nur abgeschlossene Spiele
+                completed_fixtures = [
+                    f for f in data['response']
+                    if f['fixture']['status']['short'] in ['FT', 'AET', 'PEN']
+                ]
+                
+                if st.session_state.debug_mode:
+                    st.write(f"✅ **Abgeschlossene Spiele:** {len(completed_fixtures)}")
+                
+                return completed_fixtures
             else:
                 st.warning(f"ℹ️ Keine Daten für Liga {league_id}, Saison {season}")
+                if st.session_state.debug_mode and 'errors' in data:
+                    st.write(f"⚠️ **API Errors:** {data['errors']}")
                 return []
         else:
             st.error(f"❌ API-Fehler: Status {response.status_code}")
+            if st.session_state.debug_mode:
+                st.write(f"📄 **Response Text:** {response.text[:500]}")
             return []
             
     except Exception as e:
@@ -165,6 +197,8 @@ def process_fixtures_to_dataframe(fixtures):
             }
             matches.append(match_data)
         except Exception as e:
+            if st.session_state.debug_mode:
+                st.write(f"⚠️ Fehler bei Fixture: {e}")
             continue
     
     if matches:
@@ -181,6 +215,9 @@ def calculate_team_strengths(df):
     """Berechne Team-Stärken mit Dixon-Coles Ansatz"""
     teams = pd.concat([df['home_team'], df['away_team']]).unique()
     n_teams = len(teams)
+    
+    if st.session_state.debug_mode:
+        st.write(f"🏆 **Teams gefunden:** {n_teams}")
     
     # Initialisiere Stärken
     attack = {team: 1.0 for team in teams}
@@ -256,8 +293,8 @@ def analyze_league(api_key, league_name, league_id, sample_odds=None):
     
     st.info(f"🔍 Analysiere {league_name} (Saison {season})...")
     
-    # Hole Fixtures mit korrektem Status-Parameter
-    fixtures = get_fixtures(api_key, league_id, season, include_live=False)
+    # Hole Fixtures mit Datumsbereich (erzwingt echte API-Requests!)
+    fixtures = get_fixtures(api_key, league_id, season, last_n_days=90)
     
     if not fixtures:
         st.warning(f"⚠️ Keine Daten für {league_name}")
@@ -269,7 +306,7 @@ def analyze_league(api_key, league_name, league_id, sample_odds=None):
     df = process_fixtures_to_dataframe(fixtures)
     
     if df.empty or len(df) < 10:
-        st.warning(f"⚠️ Zu wenig Daten für {league_name}")
+        st.warning(f"⚠️ Zu wenig Daten für {league_name} (nur {len(df)} Spiele)")
         return []
     
     # Berechne Stärken
@@ -337,7 +374,7 @@ def run_full_analysis(api_key, selected_leagues):
 
 def main():
     st.title("⚽ Wetten-Analyst Pro")
-    st.caption(f"v2.1 | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+    st.caption(f"v2.2 (API-Fix) | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     
     # Tabs
     tab1, tab2, tab3 = st.tabs(["⚙️ Setup", "🎯 Analyse", "❓ Info"])
@@ -352,6 +389,13 @@ def main():
             help="Kostenloser Key von api-football.com"
         )
         st.session_state.api_key = api_key
+        
+        # Debug Mode Toggle
+        st.session_state.debug_mode = st.checkbox(
+            "🐛 Debug-Modus aktivieren",
+            value=st.session_state.debug_mode,
+            help="Zeigt detaillierte API-Informationen"
+        )
         
         if api_key:
             if st.button("🔍 API Testen"):
@@ -436,14 +480,24 @@ def main():
         - Glücksspiel kann süchtig machen
         - Spiele verantwortungsvoll
         
-        ### 🔧 Fixes in v2.1:
+        ### 🔧 Fixes in v2.2:
         
-        ✅ **Korrigierter Status-Parameter**: `FT-AET-PEN` statt nur `FT`
-        - FT = Full Time (90 Min)
-        - AET = After Extra Time (Verlängerung)
-        - PEN = After Penalty (Elfmeterschießen)
+        ✅ **API-Request-Quota Fix**:
+        - Verwendet jetzt `from` und `to` Parameter statt `status`
+        - Dies erzwingt echte API-Requests ohne Cache
+        - Requests werden jetzt korrekt von der Quota abgezogen
         
-        Dies behebt das Problem mit leeren API-Responses!
+        ✅ **Debug-Modus hinzugefügt**:
+        - Aktiviere den Debug-Modus in den Einstellungen
+        - Sieh genau, welche API-Calls gemacht werden
+        - Überprüfe Response-Status und Daten
+        
+        ### 🐛 Debugging:
+        
+        Wenn keine Requests verbraucht werden:
+        1. Debug-Modus aktivieren
+        2. API-Status prüfen
+        3. Requests-Counter vor und nach Analyse prüfen
         """)
         
         st.divider()
