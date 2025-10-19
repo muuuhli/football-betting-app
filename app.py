@@ -273,7 +273,8 @@ def process_fixtures_to_dataframe(fixtures):
     
     if matches:
         df = pd.DataFrame(matches)
-        df['date'] = pd.to_datetime(df['date'])
+        # Konvertiere zu timezone-aware datetime
+        df['date'] = pd.to_datetime(df['date'], utc=True)
         return df
     return pd.DataFrame()
 
@@ -283,7 +284,9 @@ def process_fixtures_to_dataframe(fixtures):
 
 def calculate_time_weights(df):
     """Zeitgewichtung - neuere Spiele wichtiger"""
-    days_old = (datetime.now() - df['date']).dt.total_seconds() / 86400
+    # Verwende timezone-aware datetime
+    now = pd.Timestamp.now(tz='UTC')
+    days_old = (now - df['date']).dt.total_seconds() / 86400
     weights = np.exp(-days_old / 45)  # 45 Tage Halbwertszeit
     return weights
 
